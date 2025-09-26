@@ -21,12 +21,11 @@ load_dotenv()
 # Configuration
 WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
 BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
-LEADER_ADDRESS = "..."  # Replace with leader's wallet address
+LEADER_ADDRESS = "0xD876cA934Af0D7E4728020355661E54E167EC56e"  # Replace with leader's wallet address
 FIXED_ORDER_VALUE_USDC = 20.0  # Fixed $20 USDC per order
 
 running = False
 order_mappings: Dict[int, int] = {}  # leader_order_id -> follower_order_id
-_metadata_cache: Optional[Dict] = None  # Cache for asset metadata
 
 
 def signal_handler(_signum, _frame):
@@ -66,36 +65,6 @@ def is_spot_order(coin_field):
             return False
 
     return True
-
-
-
-
-async def get_asset_metadata(info: Info) -> Dict:
-    """Get and cache asset metadata for index-to-name mapping"""
-    global _metadata_cache
-
-    if _metadata_cache is None:
-        try:
-            meta = info.meta()
-            universe = meta.get("universe", [])
-
-            # Build index-to-asset mapping
-            index_to_asset = {}
-            for i, asset_info in enumerate(universe):
-                asset_name = asset_info.get("name", "")
-                if asset_name:
-                    index_to_asset[i] = asset_name
-
-            _metadata_cache = {
-                "index_to_asset": index_to_asset,
-                "universe": universe
-            }
-            print(f"📊 Loaded metadata for {len(universe)} assets")
-        except Exception as e:
-            print(f"⚠️ Error loading metadata: {e}")
-            _metadata_cache = {"index_to_asset": {}, "universe": []}
-
-    return _metadata_cache
 
 
 async def get_spot_asset_info(info: Info, coin_field: str) -> Optional[dict]:
@@ -174,18 +143,6 @@ async def get_spot_asset_info(info: Info, coin_field: str) -> Optional[dict]:
         return None
 
 
-async def get_spot_asset_price(info: Info, coin_field: str) -> Optional[float]:
-    """Get spot asset price using proper spot API endpoints"""
-    asset_info = await get_spot_asset_info(info, coin_field)
-    return asset_info['price'] if asset_info else None
-
-
-async def get_asset_price(info: Info, coin_field: str) -> Optional[float]:
-    """Get current asset price for order sizing"""
-    # For spot orders, use spot-specific API
-    return await get_spot_asset_price(info, coin_field)
-
-
 async def place_follower_order(
     exchange: Exchange,
     info: Info,
@@ -209,7 +166,7 @@ async def place_follower_order(
         asset_price = asset_info['price']
         size_decimals = asset_info['szDecimals']
 
-        # Calculate order size for $10 USDC value
+        # Calculate order size
         raw_order_size = FIXED_ORDER_VALUE_USDC / asset_price
 
         # Round to proper precision based on asset's size decimals
@@ -302,6 +259,7 @@ async def handle_leader_order_events(
             size = order.get("sz", "N/A")
             price = order.get("limitPx", "N/A")
 
+            print("-" * 80)
             print(f"📋 LEADER ORDER: {status.upper()} - {side} {size} {coin_field} @ {price} [SPOT] (ID: {leader_order_id})")
 
             if status == "open" and leader_order_id:
@@ -325,7 +283,7 @@ async def handle_leader_order_events(
                     del order_mappings[leader_order_id]
                     print(f"🔗 Removed mapping for cancelled order {leader_order_id}")
 
-    elif channel == "userEvents":
+    elif channel == "user":
         events = data.get("data", [])
         for event in events:
             if event.get("fills"):
@@ -346,10 +304,6 @@ async def monitor_and_mirror_spot_orders():
     private_key = os.getenv("HYPERLIQUID_TESTNET_PRIVATE_KEY")
     if not private_key:
         print("❌ Missing HYPERLIQUID_TESTNET_PRIVATE_KEY in .env file")
-        return
-
-    if not LEADER_ADDRESS or LEADER_ADDRESS == "0x...":
-        print("❌ Please set LEADER_ADDRESS in the script")
         return
 
     # Initialize follower trading components
@@ -426,6 +380,10 @@ async def main():
         print("❌ Missing required environment variables:")
         print("   HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
         print("   HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
+        return
+    
+    if not LEADER_ADDRESS or LEADER_ADDRESS == "0x...":
+        print("❌ Please set LEADER_ADDRESS in the script")
         return
 
     await monitor_and_mirror_spot_orders()
