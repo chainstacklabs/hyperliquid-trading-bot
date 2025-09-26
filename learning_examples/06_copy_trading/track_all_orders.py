@@ -14,7 +14,7 @@ load_dotenv()
 
 WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
 LEADER_ADDRESS = (
-    "0x..."  # Replace with leader's wallet address
+    "..."  # Replace with leader's wallet address
 )
 
 
@@ -68,6 +68,9 @@ async def handle_order_events(data):
     if channel == "orderUpdates":
         for order_update in data.get("data", []):
             info = format_trade_data(order_update, "order")
+            # Skip filled orders - we get better fill info from user channel
+            if info["status"] == "filled":
+                continue
             status_emoji = {"open": "🟢", "canceled": "❌", "filled": "✅"}.get(info["status"], "📋")
             print(f"{status_emoji} {info['status'].upper()}: {info['side']} {info['size']} {info['asset']} @ {info['price']} [{info['market_type']}] (ID: {info['order_id']})")
 
@@ -169,8 +172,8 @@ async def monitor_leader_orders():
                             print(f"Ping response: {json.dumps(data)}")
 
                         # Print raw WebSocket messages for debugging
-                        if data.get("channel") in ["orderUpdates", "user"]:
-                            print(f"RAW MESSAGE: {json.dumps(data, indent=2)}")
+                        # if data.get("channel") in ["orderUpdates", "user"]:
+                            # print(f"RAW MESSAGE: {json.dumps(data, indent=2)}")
 
                         await handle_order_events(data)
                     except json.JSONDecodeError:

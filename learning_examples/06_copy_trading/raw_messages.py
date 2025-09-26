@@ -14,7 +14,7 @@ load_dotenv()
 
 WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
 LEADER_ADDRESS = (
-    "0xD876cA934Af0D7E4728020355661E54E167EC56e"  # Replace with leader's wallet address
+    "..."  # Replace with leader's wallet address
 )
 
 
@@ -43,6 +43,7 @@ async def monitor_raw_messages():
             subscriptions = [
                 {"method": "subscribe", "subscription": {"type": "userEvents", "user": LEADER_ADDRESS}},
                 {"method": "subscribe", "subscription": {"type": "orderUpdates", "user": LEADER_ADDRESS}},
+                # {"method": "subscribe", "subscription": {"type": "userFills", "user": LEADER_ADDRESS, "aggregateByTime": True}},
             ]
 
             for sub in subscriptions:

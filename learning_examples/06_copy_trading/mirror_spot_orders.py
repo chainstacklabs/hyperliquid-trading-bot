@@ -21,7 +21,7 @@ load_dotenv()
 # Configuration
 WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
 BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
-LEADER_ADDRESS = "0x..."  # Replace with leader's wallet address
+LEADER_ADDRESS = "..."  # Replace with leader's wallet address
 FIXED_ORDER_VALUE_USDC = 20.0  # Fixed $20 USDC per order
 
 running = False
@@ -264,10 +264,7 @@ async def cancel_follower_order(
     try:
         print("🔄 Cancelling follower order ID:", follower_order_id)
 
-        result = exchange.cancel_order(
-            oid=follower_order_id,
-            coin=coin_field
-        )
+        result = exchange.cancel(name=coin_field, oid=follower_order_id)
 
         if result and result.get("status") == "ok":
             print("✅ Follower order cancelled successfully")
