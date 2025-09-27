@@ -38,8 +38,6 @@ async def place_twap_order():
         info = Info(BASE_URL, skip_ws=True)
 
         print(f"📱 Wallet: {wallet.address}")
-        print(f"🏛️  Vault address: {exchange.vault_address}")
-        print(f"🌐 Is mainnet: {exchange.base_url == 'https://api.hyperliquid.xyz'}")
 
         # Get spot metadata to find the asset
         spot_data = info.spot_meta_and_asset_ctxs()
