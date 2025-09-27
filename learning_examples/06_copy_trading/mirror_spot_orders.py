@@ -21,7 +21,10 @@ load_dotenv()
 # Configuration
 WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
 BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
-LEADER_ADDRESS = "0xD876cA934Af0D7E4728020355661E54E167EC56e"  # Replace with leader's wallet address
+
+# For tests, you can use the same wallet as a leader and follower.
+# Follower's orders will be ignored in the mirroring logic.
+LEADER_ADDRESS = "..."
 FIXED_ORDER_VALUE_USDC = 20.0  # Fixed $20 USDC per order
 
 running = False
@@ -255,6 +258,11 @@ async def handle_leader_order_events(
                 continue
 
             leader_order_id = order.get("oid")
+
+            # Skip orders placed by this script to avoid infinite loops in same-wallet tests
+            if leader_order_id in order_mappings.values():
+                continue
+
             side = "BUY" if order.get("side") == "B" else "SELL"
             size = order.get("sz", "N/A")
             price = order.get("limitPx", "N/A")
