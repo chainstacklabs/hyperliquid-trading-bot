@@ -11,15 +11,15 @@ from dotenv import load_dotenv
 from eth_account import Account
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
-from hyperliquid.utils.signing import get_timestamp_ms, sign_l1_action
+from hyperliquid.utils.signing import get_timestamp_ms, sign_l1_action, float_to_wire
 
 
 load_dotenv()
 
 BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
 SYMBOL = "PURR/USDC"  # Spot pair to match place_order.py
-ORDER_SIZE = 3.0  # Size to meet minimum $10 USDC requirement
-TWAP_DURATION_MINUTES = 30  # 30 minutes duration (try higher minimum)
+ORDER_SIZE = 10.0  # Total size 
+TWAP_DURATION_MINUTES = 5  # 5 min duration
 
 
 async def place_twap_order():
@@ -60,16 +60,15 @@ async def place_twap_order():
             print(f"💰 Asset: {SYMBOL} (#{pair_index}, spot ID: {10000 + pair_index})")
             print(f"📝 Placing TWAP BUY order: {ORDER_SIZE} {SYMBOL} over {TWAP_DURATION_MINUTES} minutes")
 
-            # Prepare TWAP order using proper API action format
             twap_action = {
                 "type": "twapOrder",
                 "twap": {
-                    "a": 10000 + pair_index,  # For spot: 10000 + spot index
-                    "b": True,  # Buy order
-                    "s": str(ORDER_SIZE),
-                    "r": False,  # Not reduce-only
-                    "m": TWAP_DURATION_MINUTES,
-                    "t": True  # Randomize
+                    "a": 10000 + pair_index,  # Asset
+                    "b": True,  # Buy/sell
+                    "s": float_to_wire(ORDER_SIZE),  # Use SDK's conversion to avoid trailing zeros
+                    "r": False,  # Reduce-only
+                    "m": TWAP_DURATION_MINUTES,  # Minutes
+                    "t": False  # Randomize
                 }
             }
 
@@ -85,9 +84,9 @@ async def place_twap_order():
                 signature = sign_l1_action(
                     exchange.wallet,
                     twap_action,
-                    None,
+                    exchange.vault_address,
                     timestamp,
-                    None,
+                    exchange.expires_after,
                     False,
                 )
 
