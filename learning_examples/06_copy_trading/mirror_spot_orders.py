@@ -31,7 +31,7 @@ running = False
 order_mappings: Dict[int, int] = {}  # leader_order_id -> follower_order_id
 
 
-def signal_handler(_signum, _frame):
+def signal_handler(signum, frame):
     """Handle Ctrl+C gracefully"""
     global running
     print("\nShutting down...")
@@ -160,20 +160,15 @@ async def place_follower_order(
         if not is_spot_order(coin_field):
             return None
 
-        # Get current asset info with price and size decimals
+        # Get current asset info size decimals
         asset_info = await get_spot_asset_info(info, coin_field)
         if not asset_info:
             print(f"❌ Could not get asset info for {coin_field}")
             return None
 
-        asset_price = asset_info['price']
-        size_decimals = asset_info['szDecimals']
-
-        # Calculate order size
-        raw_order_size = FIXED_ORDER_VALUE_USDC / asset_price
-
         # Round to proper precision based on asset's size decimals
-        order_size = round(raw_order_size, size_decimals)
+        order_size = round(FIXED_ORDER_VALUE_USDC / price,
+                           asset_info['szDecimals'])
 
         if order_size <= 0:
             print(f"❌ Invalid order size calculated for {coin_field}")
@@ -365,6 +360,10 @@ async def monitor_and_mirror_spot_orders():
 
                 try:
                     data = json.loads(message)
+                    
+                    print(f"RAW MESSAGE: {json.dumps(data, indent=2)}")
+                    print("-" * 40)
+
                     await handle_leader_order_events(data, exchange, info)
                 except json.JSONDecodeError:
                     print("⚠️ Received invalid JSON")
