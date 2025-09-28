@@ -2,6 +2,11 @@
 Mirror spot orders from a leader wallet with fixed $10 USDC sizing.
 Monitors leader's spot orders and places corresponding orders for follower.
 Handles order placement, cancellation, and fills with real-time WebSocket monitoring.
+
+Fixed infinite loop issue when using same wallet for leader/follower:
+- Added message queue to process WebSocket messages sequentially
+- Each message processed completely before next one starts
+- Prevents race condition where follower orders appear while still placing them
 """
 
 import asyncio
@@ -29,7 +34,7 @@ FIXED_ORDER_VALUE_USDC = 20.0  # Fixed $20 USDC per order
 
 running = False
 order_mappings: Dict[int, int] = {}  # leader_order_id -> follower_order_id
-twap_mappings: Dict[int, int] = {}  # leader_twap_id -> follower_twap_id
+twap_mappings: Dict[str, int] = {}  # leader_twap_key -> follower_twap_id
 
 
 def signal_handler(signum, frame):
@@ -111,7 +116,7 @@ async def get_spot_asset_info(info: Info, coin_field: str) -> Optional[dict]:
                                     token_info = tokens[base_token_index]
                                     size_decimals = token_info.get('szDecimals', 6)
 
-                        print(f"💰 Spot price for {coin_field}: ${price} (szDecimals: {size_decimals})")
+                        # print(f"💰 Spot price for {coin_field}: ${price} (szDecimals: {size_decimals})")
                         return {
                             'price': price,
                             'szDecimals': size_decimals,
@@ -442,8 +447,9 @@ async def place_follower_order(
                     print(f"✅ Follower order placed! ID: {follower_order_id}")
                     return follower_order_id
                 elif "filled" in status_info:
-                    print("✅ Follower order filled immediately!")
-                    return -1  # Special value for immediate fill
+                    follower_order_id = status_info["filled"]["oid"]
+                    print(f"✅ Follower order filled immediately! ID: {follower_order_id}")
+                    return follower_order_id
 
         print(f"❌ Failed to place follower order: {result}")
         return None
@@ -539,8 +545,9 @@ async def handle_leader_order_events(
 
             leader_order_id = order.get("oid")
 
-            # Skip follower orders to prevent infinite loops
+            # Skip follower orders, but allow processing of known leader orders for cancellation/modification
             if leader_order_id in order_mappings.values():
+                print(f"DEBUG: Skipping follower order {leader_order_id}:{status}")
                 continue
 
             print(f"LEADER ORDER {status.upper()}: {order.get('side')} {order.get('sz')} {coin_field} @ {order.get('limitPx')} (ID: {leader_order_id})")
@@ -585,32 +592,33 @@ async def handle_leader_order_events(
             if not is_spot_order(coin_field):
                 continue
 
-            info_data = format_trade_data(twap_event, "twap")
-            leader_twap_id = info_data["twap_id"]
+            # Create unique key for TWAP matching (coin + side + size + minutes + timestamp)
+            twap_key = f"{coin_field}_{state.get('side')}_{state.get('sz')}_{state.get('minutes')}_{state.get('timestamp')}"
+            twap_status = twap_event.get("status", {}).get("status", "unknown")
 
-            # Skip follower TWAP orders
-            if leader_twap_id != "N/A" and int(leader_twap_id) in twap_mappings.values():
+            print(f"LEADER TWAP {twap_status.upper()}: {state.get('side')} {state.get('sz')} {coin_field} (Key: {twap_key})")
+
+            # Skip follower TWAP orders - check if this key matches any we've created
+            if twap_key in twap_mappings:
+                print(f"DEBUG: Skipping known TWAP {twap_key}")
                 continue
 
-            print(f"LEADER TWAP {info_data['status'].upper()}: {info_data['side']} {info_data['size']} {info_data['asset']} (ID: {leader_twap_id})")
-
-            if info_data["status"] == "activated" and leader_twap_id != "N/A":
+            if twap_status == "activated":
                 # New TWAP order placed - attempt to mirror it
                 try:
                     follower_twap_id = await place_follower_twap_order(exchange, info, twap_event)
                     if follower_twap_id:
-                        twap_mappings[int(leader_twap_id)] = follower_twap_id
-                        print(f"Mapped TWAP {leader_twap_id} -> {follower_twap_id}")
+                        twap_mappings[twap_key] = follower_twap_id
+                        print(f"Mapped TWAP {twap_key} -> {follower_twap_id}")
                 except Exception as e:
-                    print(f"Error mirroring TWAP {leader_twap_id}: {e}")
+                    print(f"Error mirroring TWAP {twap_key}: {e}")
 
-            elif info_data["status"] in ["canceled", "terminated"] and leader_twap_id != "N/A":
+            elif twap_status in ["canceled", "terminated"]:
                 # TWAP cancelled/terminated - cancel corresponding follower TWAP
-                leader_twap_id_int = int(leader_twap_id)
-                if leader_twap_id_int in twap_mappings:
-                    follower_twap_id = twap_mappings[leader_twap_id_int]
+                if twap_key in twap_mappings:
+                    follower_twap_id = twap_mappings[twap_key]
                     await cancel_follower_twap_order(exchange, info, follower_twap_id, coin_field)
-                    del twap_mappings[leader_twap_id_int]
+                    del twap_mappings[twap_key]
 
     elif channel == "subscriptionResponse":
         print("✅ WebSocket subscription confirmed")
@@ -669,22 +677,45 @@ async def monitor_and_mirror_spot_orders():
             print("=" * 80)
 
             running = True
+            message_queue = asyncio.Queue()
 
-            async for message in websocket:
-                if not running:
-                    break
+            # Task to receive messages and put them in queue
+            async def message_receiver():
+                async for message in websocket:
+                    if not running:
+                        break
+                    await message_queue.put(message)
 
-                try:
-                    data = json.loads(message)
-                    
-                    # print(f"RAW MESSAGE: {json.dumps(data, indent=2)}")
-                    # print("-" * 40)
+            # Task to process messages one by one from queue
+            async def message_processor():
+                while running:
+                    try:
+                        # Wait for next message with timeout
+                        message = await asyncio.wait_for(message_queue.get(), timeout=1.0)
 
-                    await handle_leader_order_events(data, exchange, info)
-                except json.JSONDecodeError:
-                    print("⚠️ Received invalid JSON")
-                except Exception as e:
-                    print(f"❌ Error processing message: {e}")
+                        try:
+                            data = json.loads(message)
+
+                            # print(f"RAW MESSAGE: {json.dumps(data, indent=2)}")
+                            # print("-" * 40)
+
+                            # Process message completely before moving to next
+                            await handle_leader_order_events(data, exchange, info)
+                        except json.JSONDecodeError:
+                            print("⚠️ Received invalid JSON")
+                        except Exception as e:
+                            print(f"❌ Error processing message: {e}")
+                        finally:
+                            message_queue.task_done()
+
+                    except asyncio.TimeoutError:
+                        continue  # No message received, continue loop
+
+            # Run both tasks concurrently
+            await asyncio.gather(
+                message_receiver(),
+                message_processor()
+            )
 
     except websockets.exceptions.ConnectionClosed:
         print("🔌 WebSocket connection closed")
