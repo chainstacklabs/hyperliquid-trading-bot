@@ -18,7 +18,7 @@ load_dotenv()
 
 BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
 SYMBOL = "PURR/USDC"  # Spot pair to match place_order.py
-ORDER_SIZE = 10.0  # Total size
+ORDER_SIZE = 20.0  # Total size
 TWAP_DURATION_MINUTES = 5  # 5 min duration
 
 

@@ -1,12 +1,13 @@
 """
-Mirror spot TWAP orders from a leader wallet with fixed $20 USDC sizing.
+Mirror spot TWAP orders from a leader wallet with fixed sizing.
 Monitors leader's spot TWAP orders and places corresponding TWAP orders for follower.
 Handles TWAP placement, cancellation, and monitoring with real-time WebSocket monitoring.
 
-Fixed infinite loop issue when using same wallet for leader/follower:
-- Added message queue to process WebSocket messages sequentially
-- Each message processed completely before next one starts
-- Prevents race condition where follower TWAPs appear while still placing them
+TWAP tracking (for tests with same wallet as leader and follower):
+- WebSocket events don't include TWAP IDs, only TWAP properties (coin, side, size, etc)
+- Uses combination keys (coin_side_minutes_randomize_size) to detect duplicates
+- Tracks leader vs follower combinations separately since follower adjusts size
+- Prevents processing our own follower TWAPs as new leader orders
 """
 
 import asyncio
@@ -30,10 +31,12 @@ BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
 # For tests, you can use the same wallet as a leader and follower.
 # Follower's TWAPs will be ignored in the mirroring logic.
 LEADER_ADDRESS = os.getenv("TESTNET_WALLET_ADDRESS")
-FIXED_ORDER_VALUE_USDC = 20.0  # Fixed $20 USDC per TWAP
+FIXED_ORDER_VALUE_USDC = 60.0
 
 running = False
-twap_mappings: Dict[str, int] = {}  # leader_twap_key -> follower_twap_id
+leader_twap_combinations: set = set()      # Track processed leader TWAPs with size
+follower_twap_combinations: set = set()    # Track our placed follower TWAPs with adjusted size
+twap_mappings: Dict[str, int] = {}         # leader_combination -> follower_twap_id
 
 
 def signal_handler(signum, frame):
@@ -74,6 +77,22 @@ def is_spot_order(coin_field):
             return False
 
     return True
+
+
+def create_leader_twap_combination(state: dict) -> str:
+    """Create leader TWAP combination ID with original size"""
+    coin_field = state.get("coin", "")
+    side = state.get("side")
+    minutes = state.get("minutes", 1)
+    randomize = state.get("randomize", False)
+    size = state.get("sz", "0")
+
+    return f"{coin_field}_{side}_{minutes}_{randomize}_{size}"
+
+
+def create_follower_twap_combination(coin_field: str, side: str, minutes: int, randomize: bool, follower_size: float) -> str:
+    """Create follower TWAP combination ID with adjusted size"""
+    return f"{coin_field}_{side}_{minutes}_{randomize}_{follower_size}"
 
 
 async def get_spot_asset_info(info: Info, coin_field: str) -> Optional[dict]:
@@ -156,7 +175,7 @@ async def get_spot_asset_info(info: Info, coin_field: str) -> Optional[dict]:
 
 
 async def place_follower_twap_order(
-    exchange: Exchange, info: Info, leader_twap_data: dict
+    exchange: Exchange, info: Info, leader_twap_data: dict, leader_combination: str
 ) -> Optional[int]:
     """Place corresponding follower TWAP order for spot trades"""
     try:
@@ -248,6 +267,14 @@ async def place_follower_twap_order(
                 if "running" in status_info:
                     follower_twap_id = status_info["running"]["twapId"]
                     print(f"✅ Follower TWAP placed! ID: {follower_twap_id}")
+
+                    # Track the follower TWAP combination to filter it from future messages
+                    follower_combination = create_follower_twap_combination(
+                        coin_field, side, minutes, randomize, follower_total_size
+                    )
+                    follower_twap_combinations.add(follower_combination)
+                    print(f"Tracking follower combination: {follower_combination}")
+
                     return follower_twap_id
                 else:
                     print(f"⚠️ Unexpected TWAP status: {status_info}")
@@ -353,39 +380,72 @@ async def handle_leader_twap_events(data: dict, exchange: Exchange, info: Info):
             if not is_spot_order(coin_field):
                 continue
 
-            # Create unique key for TWAP matching (coin + side + size + minutes + timestamp)
-            twap_key = f"{coin_field}_{state.get('side')}_{state.get('sz')}_{state.get('minutes')}_{state.get('timestamp')}"
+            # Create TWAP combination ID with size for precise tracking
+            leader_combination = create_leader_twap_combination(state)
             twap_status = twap_event.get("status", {}).get("status", "unknown")
 
             print(
-                f"LEADER TWAP {twap_status.upper()}: {state.get('side')} {state.get('sz')} {coin_field} (Key: {twap_key})"
+                f"TWAP {twap_status.upper()}: {state.get('side')} {state.get('sz')} {coin_field} (Leader: {leader_combination})"
             )
 
-            # Skip follower TWAP orders - check if this key matches any we've created
-            if twap_key in twap_mappings:
-                print(f"DEBUG: Skipping known TWAP {twap_key}")
-                continue
+            # Check if this is our own follower TWAP - skip processing
+            # We need to create potential follower combination to check
+            try:
+                side = state.get("side")
+                minutes = state.get("minutes", 1)
+                randomize = state.get("randomize", False)
+                current_size = float(state.get("sz", "0"))
+
+                potential_follower_combination = create_follower_twap_combination(
+                    coin_field, side, minutes, randomize, current_size
+                )
+
+                if potential_follower_combination in follower_twap_combinations:
+                    print(f"DEBUG: Skipping our own follower TWAP: {potential_follower_combination}")
+                    continue
+            except (ValueError, TypeError):
+                pass  # Continue processing if size conversion fails
 
             if twap_status == "activated":
+                # Skip if we already processed this leader TWAP combination
+                if leader_combination in leader_twap_combinations:
+                    print(f"DEBUG: Skipping already processed leader TWAP: {leader_combination}")
+                    continue
+
+                # Mark this combination as processed to avoid duplicates
+                leader_twap_combinations.add(leader_combination)
+
                 # New TWAP order placed - attempt to mirror it
                 try:
                     follower_twap_id = await place_follower_twap_order(
-                        exchange, info, twap_event
+                        exchange, info, twap_event, leader_combination
                     )
                     if follower_twap_id:
-                        twap_mappings[twap_key] = follower_twap_id
-                        print(f"Mapped TWAP {twap_key} -> {follower_twap_id}")
+                        twap_mappings[leader_combination] = follower_twap_id
+                        print(f"Mapped leader TWAP {leader_combination} -> follower ID {follower_twap_id}")
                 except Exception as e:
-                    print(f"Error mirroring TWAP {twap_key}: {e}")
+                    print(f"Error mirroring TWAP {leader_combination}: {e}")
 
             elif twap_status in ["canceled", "terminated"]:
                 # TWAP cancelled/terminated - cancel corresponding follower TWAP
-                if twap_key in twap_mappings:
-                    follower_twap_id = twap_mappings[twap_key]
+                if leader_combination in twap_mappings:
+                    follower_twap_id = twap_mappings[leader_combination]
                     await cancel_follower_twap_order(
                         exchange, info, follower_twap_id, coin_field
                     )
-                    del twap_mappings[twap_key]
+                    del twap_mappings[leader_combination]
+                    # Remove from processed combinations so it can be placed again later
+                    leader_twap_combinations.discard(leader_combination)
+
+                    # Also remove corresponding follower combination from tracking
+                    # Find and remove the follower combination
+                    to_remove = None
+                    for follower_combo in follower_twap_combinations:
+                        if follower_combo.startswith(f"{coin_field}_{state.get('side')}_{state.get('minutes')}_{state.get('randomize', False)}_"):
+                            to_remove = follower_combo
+                            break
+                    if to_remove:
+                        follower_twap_combinations.discard(to_remove)
 
     elif channel == "subscriptionResponse":
         print("✅ WebSocket subscription confirmed")
@@ -452,8 +512,8 @@ async def monitor_and_mirror_spot_twap_orders():
                         try:
                             data = json.loads(message)
 
-                            print(f"RAW MESSAGE: {json.dumps(data, indent=2)}")
-                            print("-" * 40)
+                            # print(f"RAW MESSAGE: {json.dumps(data, indent=2)}")
+                            # print("-" * 40)
 
                             # Process message completely before moving to next
                             await handle_leader_twap_events(data, exchange, info)
@@ -477,6 +537,8 @@ async def monitor_and_mirror_spot_twap_orders():
     finally:
         print("👋 Disconnected")
         print(f"📊 Final TWAP mappings: {len(twap_mappings)} active")
+        print(f"📊 Leader combinations processed: {len(leader_twap_combinations)} total")
+        print(f"📊 Follower combinations tracked: {len(follower_twap_combinations)} total")
 
 
 async def main():
