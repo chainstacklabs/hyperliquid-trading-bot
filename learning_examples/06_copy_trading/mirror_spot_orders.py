@@ -14,7 +14,7 @@ import websockets
 from eth_account import Account
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
-from hyperliquid.utils.signing import OrderType as HLOrderType
+from hyperliquid.utils.signing import OrderType as HLOrderType, get_timestamp_ms, sign_l1_action, float_to_wire
 
 load_dotenv()
 
@@ -29,10 +29,12 @@ FIXED_ORDER_VALUE_USDC = 20.0  # Fixed $20 USDC per order
 
 running = False
 order_mappings: Dict[int, int] = {}  # leader_order_id -> follower_order_id
+twap_mappings: Dict[int, int] = {}  # leader_twap_id -> follower_twap_id
 
 
 def signal_handler(signum, frame):
     """Handle Ctrl+C gracefully"""
+    del signum, frame  # Unused parameters
     global running
     print("\nShutting down...")
     running = False
@@ -146,6 +148,247 @@ async def get_spot_asset_info(info: Info, coin_field: str) -> Optional[dict]:
         return None
 
 
+async def place_follower_twap_order(
+    exchange: Exchange,
+    info: Info,
+    leader_twap_data: dict
+) -> Optional[int]:
+    """Place corresponding follower TWAP order for spot trades"""
+    try:
+        state = leader_twap_data.get("state", {})
+        coin_field = state.get("coin", "")
+        side = state.get("side")  # "B" or "A"
+        # total_size = float(state.get("sz", 0))  # Leader's size - not used for follower sizing
+        minutes = state.get("minutes", 1)
+        randomize = state.get("randomize", False)
+        reduce_only = state.get("reduceOnly", False)
+
+        if not is_spot_order(coin_field):
+            return None
+
+        # Get current asset info for proper order sizing
+        asset_info = await get_spot_asset_info(info, coin_field)
+        if not asset_info:
+            print(f"❌ Could not get asset info for TWAP {coin_field}")
+            return None
+
+        # Calculate equivalent TWAP size based on fixed USDC value
+        # Use current price to determine follower's size
+        follower_total_size = round(FIXED_ORDER_VALUE_USDC / asset_info['price'],
+                                   asset_info['szDecimals'])
+
+        if follower_total_size <= 0:
+            print(f"❌ Invalid TWAP size calculated for {coin_field}")
+            return None
+
+        is_buy = side == "B"
+
+        print(f"🔄 Placing follower TWAP: {'BUY' if is_buy else 'SELL'} {follower_total_size} {coin_field} over {minutes}min")
+
+        # Get spot metadata to find asset index
+        try:
+            if coin_field.startswith("@"):
+                asset_index = int(coin_field[1:])
+            elif "/" in coin_field:
+                spot_meta = info.spot_meta()
+                universe = spot_meta.get('universe', [])
+                asset_index = None
+                for pair_info in universe:
+                    if pair_info.get('name') == coin_field:
+                        asset_index = pair_info.get('index')
+                        break
+                if asset_index is None:
+                    print(f"❌ Could not find asset index for {coin_field}")
+                    return None
+            else:
+                print(f"❌ Unsupported coin format for TWAP: {coin_field}")
+                return None
+
+            # Prepare TWAP action
+            twap_action = {
+                "type": "twapOrder",
+                "twap": {
+                    "a": 10000 + asset_index,  # Asset
+                    "b": is_buy,  # Buy/sell
+                    "s": float_to_wire(follower_total_size),  # Size
+                    "r": reduce_only,  # Reduce-only
+                    "m": minutes,  # Minutes
+                    "t": randomize  # Randomize
+                }
+            }
+
+            # Sign and send TWAP order
+            timestamp = get_timestamp_ms()
+            signature = sign_l1_action(
+                exchange.wallet,
+                twap_action,
+                exchange.vault_address,
+                timestamp,
+                exchange.expires_after,
+                False,
+            )
+
+            result = exchange._post_action(
+                twap_action,
+                signature,
+                timestamp,
+            )
+
+            if result and result.get("status") == "ok":
+                response_data = result.get("response", {}).get("data", {})
+                status_info = response_data.get("status", {})
+
+                if "running" in status_info:
+                    follower_twap_id = status_info["running"]["twapId"]
+                    print(f"✅ Follower TWAP placed! ID: {follower_twap_id}")
+                    return follower_twap_id
+                else:
+                    print(f"⚠️ Unexpected TWAP status: {status_info}")
+
+            print(f"❌ Failed to place follower TWAP: {result}")
+            return None
+
+        except Exception as e:
+            print(f"❌ Error with TWAP asset lookup: {e}")
+            return None
+
+    except Exception as e:
+        print(f"❌ Error placing follower TWAP: {e}")
+        return None
+
+
+async def cancel_follower_twap_order(
+    exchange: Exchange,
+    info: Info,
+    follower_twap_id: int,
+    coin_field: str
+) -> bool:
+    """Cancel follower TWAP order"""
+    try:
+        print("🔄 Cancelling follower TWAP ID:", follower_twap_id)
+
+        # Get asset index for cancellation
+        try:
+            if coin_field.startswith("@"):
+                asset_index = int(coin_field[1:])
+            elif "/" in coin_field:
+                spot_meta = info.spot_meta()
+                universe = spot_meta.get('universe', [])
+                asset_index = None
+                for pair_info in universe:
+                    if pair_info.get('name') == coin_field:
+                        asset_index = pair_info.get('index')
+                        break
+                if asset_index is None:
+                    print(f"❌ Could not find asset index for TWAP cancel {coin_field}")
+                    return False
+            else:
+                print(f"❌ Unsupported coin format for TWAP cancel: {coin_field}")
+                return False
+
+            # Prepare TWAP cancellation action
+            twap_cancel_action = {
+                "type": "twapCancel",
+                "a": 10000 + asset_index,
+                "t": follower_twap_id
+            }
+
+            # Sign and send TWAP cancellation
+            timestamp = get_timestamp_ms()
+            signature = sign_l1_action(
+                exchange.wallet,
+                twap_cancel_action,
+                exchange.vault_address,
+                timestamp,
+                exchange.expires_after,
+                False,
+            )
+
+            result = exchange._post_action(
+                twap_cancel_action,
+                signature,
+                timestamp,
+            )
+
+            if result and result.get("status") == "ok":
+                response_data = result.get("response", {}).get("data", {})
+                if response_data.get("status") == "success":
+                    print("✅ Follower TWAP cancelled successfully")
+                    return True
+                else:
+                    error_msg = response_data.get("status", {}).get("error", "Unknown error")
+                    print(f"❌ Failed to cancel follower TWAP: {error_msg}")
+                    return False
+            else:
+                print(f"❌ Failed to cancel follower TWAP: {result}")
+                return False
+
+        except Exception as e:
+            print(f"❌ Error with TWAP cancel asset lookup: {e}")
+            return False
+
+    except Exception as e:
+        print(f"❌ Error cancelling follower TWAP: {e}")
+        return False
+
+
+async def modify_follower_order(
+    exchange: Exchange,
+    info: Info,
+    follower_order_id: int,
+    leader_order_data: dict,
+    coin_field: str
+) -> bool:
+    """Modify follower order to match leader's changes"""
+    try:
+        side = leader_order_data.get("side")  # "B" or "A"
+        new_price = float(leader_order_data.get("limitPx", 0))
+        # new_size_raw = float(leader_order_data.get("sz", 0))  # Leader's size - not used for follower sizing
+
+        if not is_spot_order(coin_field):
+            return False
+
+        # Get current asset info for proper sizing
+        asset_info = await get_spot_asset_info(info, coin_field)
+        if not asset_info:
+            print(f"❌ Could not get asset info for modify {coin_field}")
+            return False
+
+        # Calculate follower's equivalent size based on fixed USDC value
+        follower_size = round(FIXED_ORDER_VALUE_USDC / new_price,
+                             asset_info['szDecimals'])
+
+        if follower_size <= 0:
+            print(f"❌ Invalid modified size calculated for {coin_field}")
+            return False
+
+        is_buy = side == "B"
+
+        print(f"🔄 Modifying follower order {follower_order_id}: {'BUY' if is_buy else 'SELL'} {follower_size} {coin_field} @ ${new_price}")
+
+        # Modify the order
+        result = exchange.modify_order(
+            oid=follower_order_id,
+            name=coin_field,
+            is_buy=is_buy,
+            sz=follower_size,
+            limit_px=new_price,
+            order_type={"limit": {"tif": "Gtc"}},
+            reduce_only=False
+        )
+
+        if result and result.get("status") == "ok":
+            print(f"✅ Follower order {follower_order_id} modified successfully!")
+            return True
+        else:
+            print(f"❌ Failed to modify follower order: {result}")
+            return False
+
+    except Exception as e:
+        print(f"❌ Error modifying follower order: {e}")
+        return False
+
+
 async def place_follower_order(
     exchange: Exchange,
     info: Info,
@@ -233,6 +476,48 @@ async def cancel_follower_order(
         return False
 
 
+def format_trade_data(data, data_type):
+    """Format order, fill, or TWAP data for display"""
+    if data_type == "order":
+        order = data.get("order", {})
+        coin_field = order.get("coin", "N/A")
+        return {
+            "asset": coin_field,
+            "side": "BUY" if order.get("side") == "B" else "SELL",
+            "size": order.get("sz", "N/A"),
+            "price": order.get("limitPx", "N/A"),
+            "order_id": order.get("oid", "N/A"),
+            "status": data.get("status", "unknown"),
+        }
+    elif data_type == "twap":
+        state = data.get("state", {})
+        status = data.get("status", {})
+        coin_field = state.get("coin", "N/A")
+        return {
+            "asset": coin_field,
+            "side": "BUY" if state.get("side") == "B" else "SELL",
+            "size": state.get("sz", "N/A"),
+            "executed_size": state.get("executedSz", "0"),
+            "executed_notional": state.get("executedNtl", "0"),
+            "minutes": state.get("minutes", "N/A"),
+            "status": status.get("status", "unknown"),
+            "timestamp": state.get("timestamp", "N/A"),
+            "reduce_only": state.get("reduceOnly", False),
+            "randomize": state.get("randomize", False),
+            "twap_id": status.get("running", {}).get("twapId") or status.get("terminated", {}).get("twapId") or "N/A"
+        }
+    else:  # fill
+        coin_field = data.get("coin", "N/A")
+        return {
+            "asset": coin_field,
+            "side": "BUY" if data.get("side") == "B" else "SELL",
+            "size": data.get("sz", "N/A"),
+            "price": data.get("px", "N/A"),
+            "fee": data.get("fee", "N/A"),
+            "pnl": data.get("closedPnl", "0"),
+        }
+
+
 async def handle_leader_order_events(
     data: dict,
     exchange: Exchange,
@@ -254,47 +539,78 @@ async def handle_leader_order_events(
 
             leader_order_id = order.get("oid")
 
-            # Skip orders placed by this script to avoid infinite loops in same-wallet tests
+            # Skip follower orders to prevent infinite loops
             if leader_order_id in order_mappings.values():
                 continue
 
-            side = "BUY" if order.get("side") == "B" else "SELL"
-            size = order.get("sz", "N/A")
-            price = order.get("limitPx", "N/A")
+            print(f"LEADER ORDER {status.upper()}: {order.get('side')} {order.get('sz')} {coin_field} @ {order.get('limitPx')} (ID: {leader_order_id})")
 
-            print("-" * 80)
-            print(f"📋 LEADER ORDER: {status.upper()} - {side} {size} {coin_field} @ {price} [SPOT] (ID: {leader_order_id})")
-
-            if status == "open" and leader_order_id:
-                # New order placed - attempt to mirror it
-                try:
+            if status == "open":
+                if leader_order_id in order_mappings:
+                    # This is a modification of existing order
+                    follower_order_id = order_mappings[leader_order_id]
+                    if follower_order_id > 0:
+                        await modify_follower_order(exchange, info, follower_order_id, order, coin_field)
+                else:
+                    # New order - mirror it
                     follower_order_id = await place_follower_order(exchange, info, order)
                     if follower_order_id:
                         order_mappings[leader_order_id] = follower_order_id
-                        print(f"🔗 Mapped leader order {leader_order_id} -> follower order {follower_order_id}")
-                    else:
-                        print(f"⚠️ Could not mirror leader order {leader_order_id} for {coin_field}")
-                except Exception as e:
-                    print(f"❌ Error mirroring order {leader_order_id}: {e}")
+                        print(f"Mapped {leader_order_id} -> {follower_order_id}")
 
-            elif status == "canceled" and leader_order_id:
-                # Order cancelled - cancel corresponding follower order
-                if leader_order_id in order_mappings:
-                    follower_order_id = order_mappings[leader_order_id]
-                    if follower_order_id > 0:  # Don't try to cancel immediate fills
-                        await cancel_follower_order(exchange, follower_order_id, coin_field)
-                    del order_mappings[leader_order_id]
-                    print(f"🔗 Removed mapping for cancelled order {leader_order_id}")
+            elif status == "canceled" and leader_order_id in order_mappings:
+                follower_order_id = order_mappings[leader_order_id]
+                if follower_order_id > 0:
+                    await cancel_follower_order(exchange, follower_order_id, coin_field)
+                del order_mappings[leader_order_id]
 
     elif channel == "user":
-        events = data.get("data", [])
-        for event in events:
-            if event.get("fills"):
-                for fill in event["fills"]:
-                    coin_field = fill.get("coin", "N/A")
-                    if is_spot_order(coin_field):
-                        side = "BUY" if fill.get("side") == "B" else "SELL"
-                        print(f"💰 LEADER FILL: {side} {fill.get('sz', 'N/A')} {coin_field} @ {fill.get('px', 'N/A')} [SPOT] (Fee: {fill.get('fee', 'N/A')})")
+        user_data = data.get("data", {})
+
+        # Handle fills - just log them
+        for fill in user_data.get("fills", []):
+            coin_field = fill.get("coin", "N/A")
+            if is_spot_order(coin_field):
+                fill_order_id = fill.get("oid")
+                if fill_order_id and fill_order_id in order_mappings.values():
+                    continue
+                side = "BUY" if fill.get("side") == "B" else "SELL"
+                print(f"LEADER FILL: {side} {fill.get('sz')} {coin_field} @ {fill.get('px')}")
+
+        # Handle TWAP orders - mirror them
+        for twap_event in user_data.get("twapHistory", []):
+            state = twap_event.get("state", {})
+            coin_field = state.get("coin", "")
+
+            if not is_spot_order(coin_field):
+                continue
+
+            info_data = format_trade_data(twap_event, "twap")
+            leader_twap_id = info_data["twap_id"]
+
+            # Skip follower TWAP orders
+            if leader_twap_id != "N/A" and int(leader_twap_id) in twap_mappings.values():
+                continue
+
+            print(f"LEADER TWAP {info_data['status'].upper()}: {info_data['side']} {info_data['size']} {info_data['asset']} (ID: {leader_twap_id})")
+
+            if info_data["status"] == "activated" and leader_twap_id != "N/A":
+                # New TWAP order placed - attempt to mirror it
+                try:
+                    follower_twap_id = await place_follower_twap_order(exchange, info, twap_event)
+                    if follower_twap_id:
+                        twap_mappings[int(leader_twap_id)] = follower_twap_id
+                        print(f"Mapped TWAP {leader_twap_id} -> {follower_twap_id}")
+                except Exception as e:
+                    print(f"Error mirroring TWAP {leader_twap_id}: {e}")
+
+            elif info_data["status"] in ["canceled", "terminated"] and leader_twap_id != "N/A":
+                # TWAP cancelled/terminated - cancel corresponding follower TWAP
+                leader_twap_id_int = int(leader_twap_id)
+                if leader_twap_id_int in twap_mappings:
+                    follower_twap_id = twap_mappings[leader_twap_id_int]
+                    await cancel_follower_twap_order(exchange, info, follower_twap_id, coin_field)
+                    del twap_mappings[leader_twap_id_int]
 
     elif channel == "subscriptionResponse":
         print("✅ WebSocket subscription confirmed")
@@ -335,7 +651,7 @@ async def monitor_and_mirror_spot_orders():
                 }
             }
 
-            # Subscribe to leader's user events (fills)
+            # Subscribe to leader's user events (fills, TWAPs)
             events_subscription = {
                 "method": "subscribe",
                 "subscription": {
@@ -361,8 +677,8 @@ async def monitor_and_mirror_spot_orders():
                 try:
                     data = json.loads(message)
                     
-                    print(f"RAW MESSAGE: {json.dumps(data, indent=2)}")
-                    print("-" * 40)
+                    # print(f"RAW MESSAGE: {json.dumps(data, indent=2)}")
+                    # print("-" * 40)
 
                     await handle_leader_order_events(data, exchange, info)
                 except json.JSONDecodeError:
@@ -376,7 +692,7 @@ async def monitor_and_mirror_spot_orders():
         print(f"❌ WebSocket error: {e}")
     finally:
         print("👋 Disconnected")
-        print(f"📊 Final order mappings: {len(order_mappings)} active")
+        print(f"📊 Final order mappings: {len(order_mappings)} active, {len(twap_mappings)} TWAP active")
 
 
 async def main():
