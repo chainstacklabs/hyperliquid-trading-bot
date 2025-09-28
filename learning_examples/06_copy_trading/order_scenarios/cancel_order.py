@@ -46,8 +46,8 @@ async def cancel_spot_order():
         # Find the first spot order
         spot_order = None
         for order in open_orders:
-            coin = order.get('coin', '')
-            if coin.startswith('@') or '/' in coin:  # Spot order indicators
+            coin = order.get("coin", "")
+            if coin.startswith("@") or "/" in coin:  # Spot order indicators
                 spot_order = order
                 break
 
@@ -56,11 +56,11 @@ async def cancel_spot_order():
             print("💡 Only perpetual orders are open")
             return
 
-        order_id = spot_order.get('oid')
-        coin_field = spot_order.get('coin')
-        side = "BUY" if spot_order.get('side') == 'B' else "SELL"
-        size = spot_order.get('sz')
-        price = spot_order.get('limitPx')
+        order_id = spot_order.get("oid")
+        coin_field = spot_order.get("coin")
+        side = "BUY" if spot_order.get("side") == "B" else "SELL"
+        size = spot_order.get("sz")
+        price = spot_order.get("limitPx")
 
         print(f"🎯 Found spot order to cancel:")
         print(f"   ID: {order_id}")

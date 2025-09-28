@@ -18,7 +18,7 @@ load_dotenv()
 
 BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
 SYMBOL = "PURR/USDC"  # Spot pair to match place_order.py
-ORDER_SIZE = 10.0  # Total size 
+ORDER_SIZE = 10.0  # Total size
 TWAP_DURATION_MINUTES = 5  # 5 min duration
 
 
@@ -46,8 +46,8 @@ async def place_twap_order():
 
             # Find PURR/USDC
             target_pair = None
-            for pair in spot_meta.get('universe', []):
-                if pair.get('name') == SYMBOL:
+            for pair in spot_meta.get("universe", []):
+                if pair.get("name") == SYMBOL:
                     target_pair = pair
                     break
 
@@ -55,21 +55,25 @@ async def place_twap_order():
                 print(f"❌ Could not find {SYMBOL} in spot universe")
                 return
 
-            pair_index = target_pair.get('index')
+            pair_index = target_pair.get("index")
 
             print(f"💰 Asset: {SYMBOL} (#{pair_index}, spot ID: {10000 + pair_index})")
-            print(f"📝 Placing TWAP BUY order: {ORDER_SIZE} {SYMBOL} over {TWAP_DURATION_MINUTES} minutes")
+            print(
+                f"📝 Placing TWAP BUY order: {ORDER_SIZE} {SYMBOL} over {TWAP_DURATION_MINUTES} minutes"
+            )
 
             twap_action = {
                 "type": "twapOrder",
                 "twap": {
                     "a": 10000 + pair_index,  # Asset
                     "b": True,  # Buy/sell
-                    "s": float_to_wire(ORDER_SIZE),  # Use SDK's conversion to avoid trailing zeros
+                    "s": float_to_wire(
+                        ORDER_SIZE
+                    ),  # Use SDK's conversion to avoid trailing zeros
                     "r": False,  # Reduce-only
                     "m": TWAP_DURATION_MINUTES,  # Minutes
-                    "t": False  # Randomize
-                }
+                    "t": False,  # Randomize
+                },
             }
 
             print("📋 TWAP order action:")
@@ -107,21 +111,32 @@ async def place_twap_order():
                         twap_id = status_info["running"]["twapId"]
                         print(f"✅ TWAP order placed successfully! TWAP ID: {twap_id}")
                         print("🔍 Monitor this TWAP order in your WebSocket stream")
-                        print(f"⏱️  Order will execute over {TWAP_DURATION_MINUTES} minutes")
+                        print(
+                            f"⏱️  Order will execute over {TWAP_DURATION_MINUTES} minutes"
+                        )
                     else:
                         print(f"⚠️ Unexpected TWAP status: {status_info}")
                 else:
                     print(f"❌ TWAP order failed: {result}")
-                    if result and isinstance(result, dict) and "Invalid TWAP duration" in str(result.get("response", "")):
-                        print("💡 Try increasing TWAP_DURATION_MINUTES (minimum may be required)")
+                    if (
+                        result
+                        and isinstance(result, dict)
+                        and "Invalid TWAP duration" in str(result.get("response", ""))
+                    ):
+                        print(
+                            "💡 Try increasing TWAP_DURATION_MINUTES (minimum may be required)"
+                        )
 
             except Exception as api_error:
                 import traceback
+
                 print(f"❌ TWAP API Error: {str(api_error)}")
                 print(f"❌ Error type: {type(api_error).__name__}")
                 print("❌ Full traceback:")
                 traceback.print_exc()
-                print("⚠️  TWAP orders may not be available on testnet or for this asset")
+                print(
+                    "⚠️  TWAP orders may not be available on testnet or for this asset"
+                )
                 print("💡 Try with a mainnet connection or different asset if needed")
         else:
             print("❌ Could not get spot metadata")

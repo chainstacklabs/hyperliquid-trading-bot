@@ -45,8 +45,8 @@ async def modify_multiple_spot_orders():
         # Find all spot orders
         spot_orders = []
         for order in open_orders:
-            coin = order.get('coin', '')
-            if coin.startswith('@') or '/' in coin:  # Spot order indicators
+            coin = order.get("coin", "")
+            if coin.startswith("@") or "/" in coin:  # Spot order indicators
                 spot_orders.append(order)
 
         if not spot_orders:
@@ -61,17 +61,19 @@ async def modify_multiple_spot_orders():
         failed_modifies = 0
 
         for order in spot_orders:
-            order_id = order.get('oid')
-            coin_field = order.get('coin')
-            side = "BUY" if order.get('side') == 'B' else "SELL"
-            current_size = float(order.get('sz', 0))
-            current_price = float(order.get('limitPx', 0))
+            order_id = order.get("oid")
+            coin_field = order.get("coin")
+            side = "BUY" if order.get("side") == "B" else "SELL"
+            current_size = float(order.get("sz", 0))
+            current_price = float(order.get("limitPx", 0))
 
             # Calculate new values
             price_modifier = 0.9 if side == "BUY" else 1.1  # Small price adjustment
             new_price = round(current_price * price_modifier, 6)
 
-            print(f"   Modifying ID {order_id}: {side} {current_size} -> {current_size} {coin_field} @ ${current_price} -> ${new_price}")
+            print(
+                f"   Modifying ID {order_id}: {side} {current_size} -> {current_size} {coin_field} @ ${current_price} -> ${new_price}"
+            )
 
             try:
                 result = exchange.modify_order(
@@ -81,7 +83,7 @@ async def modify_multiple_spot_orders():
                     sz=current_size,
                     limit_px=new_price,
                     order_type={"limit": {"tif": "Gtc"}},
-                    reduce_only=False
+                    reduce_only=False,
                 )
 
                 if result and result.get("status") == "ok":

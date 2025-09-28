@@ -39,8 +39,14 @@ async def monitor_raw_messages():
 
             # Subscribe to user events (positions, fills, TP/SL updates) and orders
             subscriptions = [
-                {"method": "subscribe", "subscription": {"type": "userEvents", "user": LEADER_ADDRESS}},
-                {"method": "subscribe", "subscription": {"type": "orderUpdates", "user": LEADER_ADDRESS}},
+                {
+                    "method": "subscribe",
+                    "subscription": {"type": "userEvents", "user": LEADER_ADDRESS},
+                },
+                {
+                    "method": "subscribe",
+                    "subscription": {"type": "orderUpdates", "user": LEADER_ADDRESS},
+                },
                 # {"method": "subscribe", "subscription": {"type": "userFills", "user": LEADER_ADDRESS, "aggregateByTime": True}},
             ]
 

@@ -27,32 +27,68 @@ SYMBOL = "PURR/USDC"  # Spot pair
 ORDER_SIZE = 3.0  # Size to meet minimum $10 USDC requirement
 PRICE_OFFSET_PCT = -50  # 50% below market for buy order (won't fill)
 
+
 def round_to_tick_size(price: float, tick_size: float) -> float:
     """Round price to the nearest valid tick size"""
     if tick_size <= 0:
         return price
     return round(price / tick_size) * tick_size
 
+
 # Test scenarios - limit orders only
 SCENARIOS = {
     # === LIMIT ORDERS ===
     # Buy orders
-    1: {"name": "GTC Limit Buy", "order_type": HLOrderType({"limit": {"tif": "Gtc"}}), "reduce_only": False, "is_buy": True},
-    2: {"name": "IOC Limit Buy", "order_type": HLOrderType({"limit": {"tif": "Ioc"}}), "reduce_only": False, "is_buy": True},
-    3: {"name": "ALO Limit Buy", "order_type": HLOrderType({"limit": {"tif": "Alo"}}), "reduce_only": False, "is_buy": True},
-
+    1: {
+        "name": "GTC Limit Buy",
+        "order_type": HLOrderType({"limit": {"tif": "Gtc"}}),
+        "reduce_only": False,
+        "is_buy": True,
+    },
+    2: {
+        "name": "IOC Limit Buy",
+        "order_type": HLOrderType({"limit": {"tif": "Ioc"}}),
+        "reduce_only": False,
+        "is_buy": True,
+    },
+    3: {
+        "name": "ALO Limit Buy",
+        "order_type": HLOrderType({"limit": {"tif": "Alo"}}),
+        "reduce_only": False,
+        "is_buy": True,
+    },
     # Sell orders
-    4: {"name": "GTC Limit Sell", "order_type": HLOrderType({"limit": {"tif": "Gtc"}}), "reduce_only": False, "is_buy": False},
-    5: {"name": "IOC Limit Sell", "order_type": HLOrderType({"limit": {"tif": "Ioc"}}), "reduce_only": False, "is_buy": False},
-    6: {"name": "ALO Limit Sell", "order_type": HLOrderType({"limit": {"tif": "Alo"}}), "reduce_only": False, "is_buy": False},
-
+    4: {
+        "name": "GTC Limit Sell",
+        "order_type": HLOrderType({"limit": {"tif": "Gtc"}}),
+        "reduce_only": False,
+        "is_buy": False,
+    },
+    5: {
+        "name": "IOC Limit Sell",
+        "order_type": HLOrderType({"limit": {"tif": "Ioc"}}),
+        "reduce_only": False,
+        "is_buy": False,
+    },
+    6: {
+        "name": "ALO Limit Sell",
+        "order_type": HLOrderType({"limit": {"tif": "Alo"}}),
+        "reduce_only": False,
+        "is_buy": False,
+    },
     # Reduce-only orders (not applicable for spot, but included for completeness)
     # 7: {"name": "GTC Reduce-Only Buy", "order_type": HLOrderType({"limit": {"tif": "Gtc"}}), "reduce_only": True, "is_buy": True},
     # 8: {"name": "GTC Reduce-Only Sell", "order_type": HLOrderType({"limit": {"tif": "Gtc"}}), "reduce_only": True, "is_buy": False},
-
     # Time-limited orders
-    9: {"name": "GTC Expires-After (30s)", "order_type": HLOrderType({"limit": {"tif": "Gtc"}}), "reduce_only": False, "is_buy": True, "expires_after": 15},
+    9: {
+        "name": "GTC Expires-After (30s)",
+        "order_type": HLOrderType({"limit": {"tif": "Gtc"}}),
+        "reduce_only": False,
+        "is_buy": True,
+        "expires_after": 15,
+    },
 }
+
 
 async def place_limit_orders():
     """Place limit orders for scenarios 1-9"""
@@ -80,8 +116,8 @@ async def place_limit_orders():
 
         # Find PURR/USDC
         target_pair = None
-        for pair in spot_meta.get('universe', []):
-            if pair.get('name') == SYMBOL:
+        for pair in spot_meta.get("universe", []):
+            if pair.get("name") == SYMBOL:
                 target_pair = pair
                 break
 
@@ -89,19 +125,19 @@ async def place_limit_orders():
             print(f"❌ Could not find {SYMBOL} in spot universe")
             return
 
-        pair_index = target_pair.get('index')
+        pair_index = target_pair.get("index")
         if pair_index >= len(asset_ctxs):
             print(f"❌ Asset index {pair_index} out of range")
             return
 
         # Get price decimals and calculate tick size
-        price_decimals = target_pair.get('priceDecimals', 2)
+        price_decimals = target_pair.get("priceDecimals", 2)
         tick_size = 1 / (10**price_decimals)
         print(f"📏 Price decimals: {price_decimals}, Tick size: ${tick_size}")
 
         # Get current price
         ctx = asset_ctxs[pair_index]
-        market_price = float(ctx.get('midPx', ctx.get('markPx', 0)))
+        market_price = float(ctx.get("midPx", ctx.get("markPx", 0)))
         if market_price <= 0:
             print(f"❌ Could not get valid price for {SYMBOL}")
             return
@@ -119,28 +155,36 @@ async def place_limit_orders():
 
             # Set expires_after if the scenario requires it
             if "expires_after" in scenario:
-                expires_time = int(time.time() * 1000) + (scenario["expires_after"] * 1000)
+                expires_time = int(time.time() * 1000) + (
+                    scenario["expires_after"] * 1000
+                )
                 exchange.set_expires_after(expires_time)
                 print(f"⏰ Order will expire in {scenario['expires_after']} seconds")
 
-            is_buy = scenario['is_buy']
+            is_buy = scenario["is_buy"]
             order_side = "BUY" if is_buy else "SELL"
 
             try:
                 # Handle regular limit orders
                 # For buy orders: below market price, for sell orders: above market price
-                price_multiplier = (1 + PRICE_OFFSET_PCT / 100) if is_buy else (1 - PRICE_OFFSET_PCT / 100)
+                price_multiplier = (
+                    (1 + PRICE_OFFSET_PCT / 100)
+                    if is_buy
+                    else (1 - PRICE_OFFSET_PCT / 100)
+                )
                 order_price = market_price * price_multiplier
                 order_price = round_to_tick_size(order_price, tick_size)
-                print(f"📝 Placing {scenario['name']} {order_side} order: {ORDER_SIZE} {SYMBOL} @ ${order_price}")
+                print(
+                    f"📝 Placing {scenario['name']} {order_side} order: {ORDER_SIZE} {SYMBOL} @ ${order_price}"
+                )
 
                 result = exchange.order(
                     name=SYMBOL,
                     is_buy=is_buy,
                     sz=ORDER_SIZE,
                     limit_px=order_price,
-                    order_type=scenario['order_type'],
-                    reduce_only=scenario['reduce_only'],
+                    order_type=scenario["order_type"],
+                    reduce_only=scenario["reduce_only"],
                 )
 
                 if result and result.get("status") == "ok":

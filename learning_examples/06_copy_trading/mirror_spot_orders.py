@@ -91,51 +91,55 @@ async def get_spot_asset_info(info: Info, coin_field: str) -> Optional[dict]:
                 if index < len(asset_ctxs):
                     ctx = asset_ctxs[index]
                     # Try midPx first, fallback to markPx
-                    price = float(ctx.get('midPx', ctx.get('markPx', 0)))
+                    price = float(ctx.get("midPx", ctx.get("markPx", 0)))
 
                     if price > 0:
                         # Get token metadata for size decimals
-                        universe = spot_meta.get('universe', [])
-                        tokens = spot_meta.get('tokens', [])
+                        universe = spot_meta.get("universe", [])
+                        tokens = spot_meta.get("tokens", [])
 
                         # Find the pair info
                         pair_info = None
                         for pair in universe:
-                            if pair.get('index') == index:
+                            if pair.get("index") == index:
                                 pair_info = pair
                                 break
 
                         # Get token info for size decimals
                         size_decimals = 6  # Default fallback
-                        if pair_info and 'tokens' in pair_info:
-                            token_indices = pair_info['tokens']
+                        if pair_info and "tokens" in pair_info:
+                            token_indices = pair_info["tokens"]
                             if len(token_indices) > 0:
                                 base_token_index = token_indices[0]
                                 if base_token_index < len(tokens):
                                     token_info = tokens[base_token_index]
-                                    size_decimals = token_info.get('szDecimals', 6)
+                                    size_decimals = token_info.get("szDecimals", 6)
 
                         return {
-                            'price': price,
-                            'szDecimals': size_decimals,
-                            'coin': coin_field
+                            "price": price,
+                            "szDecimals": size_decimals,
+                            "coin": coin_field,
                         }
                     else:
-                        print(f"⚠️ No spot price for {coin_field} (midPx={ctx.get('midPx')}, markPx={ctx.get('markPx')})")
+                        print(
+                            f"⚠️ No spot price for {coin_field} (midPx={ctx.get('midPx')}, markPx={ctx.get('markPx')})"
+                        )
                         return None
                 else:
-                    print(f"⚠️ Spot index {coin_field} out of range (max: @{len(asset_ctxs)-1})")
+                    print(
+                        f"⚠️ Spot index {coin_field} out of range (max: @{len(asset_ctxs) - 1})"
+                    )
                     return None
 
         elif "/" in coin_field:
             # For PAIR/USDC format, need to find the corresponding @index first
             spot_meta = info.spot_meta()
-            universe = spot_meta.get('universe', [])
+            universe = spot_meta.get("universe", [])
 
             # Find the matching pair in spot universe
             for pair_info in universe:
-                if pair_info.get('name') == coin_field:
-                    pair_index = pair_info.get('index')
+                if pair_info.get("name") == coin_field:
+                    pair_index = pair_info.get("index")
                     # Get info using the index
                     return await get_spot_asset_info(info, f"@{pair_index}")
 
@@ -156,7 +160,7 @@ async def modify_follower_order(
     info: Info,
     follower_order_id: int,
     leader_order_data: dict,
-    coin_field: str
+    coin_field: str,
 ) -> bool:
     """Modify follower order to match leader's changes"""
     try:
@@ -173,8 +177,9 @@ async def modify_follower_order(
             return False
 
         # Calculate follower's equivalent size based on fixed USDC value
-        follower_size = round(FIXED_ORDER_VALUE_USDC / new_price,
-                             asset_info['szDecimals'])
+        follower_size = round(
+            FIXED_ORDER_VALUE_USDC / new_price, asset_info["szDecimals"]
+        )
 
         if follower_size <= 0:
             print(f"❌ Invalid modified size calculated for {coin_field}")
@@ -182,7 +187,9 @@ async def modify_follower_order(
 
         is_buy = side == "B"
 
-        print(f"🔄 Modifying follower order {follower_order_id}: {'BUY' if is_buy else 'SELL'} {follower_size} {coin_field} @ ${new_price}")
+        print(
+            f"🔄 Modifying follower order {follower_order_id}: {'BUY' if is_buy else 'SELL'} {follower_size} {coin_field} @ ${new_price}"
+        )
 
         # Modify the order
         result = exchange.modify_order(
@@ -192,7 +199,7 @@ async def modify_follower_order(
             sz=follower_size,
             limit_px=new_price,
             order_type={"limit": {"tif": "Gtc"}},
-            reduce_only=False
+            reduce_only=False,
         )
 
         if result and result.get("status") == "ok":
@@ -208,9 +215,7 @@ async def modify_follower_order(
 
 
 async def place_follower_order(
-    exchange: Exchange,
-    info: Info,
-    leader_order_data: dict
+    exchange: Exchange, info: Info, leader_order_data: dict
 ) -> Optional[int]:
     """Place corresponding follower order for spot trades"""
     try:
@@ -228,8 +233,7 @@ async def place_follower_order(
             return None
 
         # Round to proper precision based on asset's size decimals
-        order_size = round(FIXED_ORDER_VALUE_USDC / price,
-                           asset_info['szDecimals'])
+        order_size = round(FIXED_ORDER_VALUE_USDC / price, asset_info["szDecimals"])
 
         if order_size <= 0:
             print(f"❌ Invalid order size calculated for {coin_field}")
@@ -237,7 +241,9 @@ async def place_follower_order(
 
         is_buy = side == "B"
 
-        print(f"🔄 Placing follower order: {'BUY' if is_buy else 'SELL'} {order_size} {coin_field} @ ${price}")
+        print(
+            f"🔄 Placing follower order: {'BUY' if is_buy else 'SELL'} {order_size} {coin_field} @ ${price}"
+        )
 
         # Place the order
         result = exchange.order(
@@ -261,7 +267,9 @@ async def place_follower_order(
                     return follower_order_id
                 elif "filled" in status_info:
                     follower_order_id = status_info["filled"]["oid"]
-                    print(f"✅ Follower order filled immediately! ID: {follower_order_id}")
+                    print(
+                        f"✅ Follower order filled immediately! ID: {follower_order_id}"
+                    )
                     return follower_order_id
 
         print(f"❌ Failed to place follower order: {result}")
@@ -273,9 +281,7 @@ async def place_follower_order(
 
 
 async def cancel_follower_order(
-    exchange: Exchange,
-    follower_order_id: int,
-    coin_field: str
+    exchange: Exchange, follower_order_id: int, coin_field: str
 ) -> bool:
     """Cancel follower order"""
     try:
@@ -295,11 +301,7 @@ async def cancel_follower_order(
         return False
 
 
-async def handle_leader_order_events(
-    data: dict,
-    exchange: Exchange,
-    info: Info
-):
+async def handle_leader_order_events(data: dict, exchange: Exchange, info: Info):
     """Process leader's order-related WebSocket events"""
     channel = data.get("channel")
 
@@ -321,17 +323,23 @@ async def handle_leader_order_events(
                 print(f"DEBUG: Skipping follower order {leader_order_id}:{status}")
                 continue
 
-            print(f"LEADER ORDER {status.upper()}: {order.get('side')} {order.get('sz')} {coin_field} @ {order.get('limitPx')} (ID: {leader_order_id})")
+            print(
+                f"LEADER ORDER {status.upper()}: {order.get('side')} {order.get('sz')} {coin_field} @ {order.get('limitPx')} (ID: {leader_order_id})"
+            )
 
             if status == "open":
                 if leader_order_id in order_mappings:
                     # This is a modification of existing order
                     follower_order_id = order_mappings[leader_order_id]
                     if follower_order_id > 0:
-                        await modify_follower_order(exchange, info, follower_order_id, order, coin_field)
+                        await modify_follower_order(
+                            exchange, info, follower_order_id, order, coin_field
+                        )
                 else:
                     # New order - mirror it
-                    follower_order_id = await place_follower_order(exchange, info, order)
+                    follower_order_id = await place_follower_order(
+                        exchange, info, order
+                    )
                     if follower_order_id:
                         order_mappings[leader_order_id] = follower_order_id
                         print(f"Mapped {leader_order_id} -> {follower_order_id}")
@@ -353,7 +361,9 @@ async def handle_leader_order_events(
                 if fill_order_id and fill_order_id in order_mappings.values():
                     continue
                 side = "BUY" if fill.get("side") == "B" else "SELL"
-                print(f"LEADER FILL: {side} {fill.get('sz')} {coin_field} @ {fill.get('px')}")
+                print(
+                    f"LEADER FILL: {side} {fill.get('sz')} {coin_field} @ {fill.get('px')}"
+                )
 
     elif channel == "subscriptionResponse":
         print("✅ WebSocket subscription confirmed")
@@ -388,19 +398,13 @@ async def monitor_and_mirror_spot_orders():
             # Subscribe to leader's order updates
             order_subscription = {
                 "method": "subscribe",
-                "subscription": {
-                    "type": "orderUpdates",
-                    "user": LEADER_ADDRESS
-                }
+                "subscription": {"type": "orderUpdates", "user": LEADER_ADDRESS},
             }
 
             # Subscribe to leader's user events (fills)
             events_subscription = {
                 "method": "subscribe",
-                "subscription": {
-                    "type": "userEvents",
-                    "user": LEADER_ADDRESS
-                }
+                "subscription": {"type": "userEvents", "user": LEADER_ADDRESS},
             }
 
             await websocket.send(json.dumps(order_subscription))
@@ -426,7 +430,9 @@ async def monitor_and_mirror_spot_orders():
                 while running:
                     try:
                         # Wait for next message with timeout
-                        message = await asyncio.wait_for(message_queue.get(), timeout=1.0)
+                        message = await asyncio.wait_for(
+                            message_queue.get(), timeout=1.0
+                        )
 
                         try:
                             data = json.loads(message)
@@ -447,10 +453,7 @@ async def monitor_and_mirror_spot_orders():
                         continue  # No message received, continue loop
 
             # Run both tasks concurrently
-            await asyncio.gather(
-                message_receiver(),
-                message_processor()
-            )
+            await asyncio.gather(message_receiver(), message_processor())
 
     except websockets.exceptions.ConnectionClosed:
         print("🔌 WebSocket connection closed")

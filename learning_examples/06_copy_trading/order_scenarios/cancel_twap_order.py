@@ -35,7 +35,6 @@ async def cancel_twap_order():
 
         print(f"📱 Wallet: {wallet.address}")
 
-
         # Check for active TWAP orders
         print("🔍 Looking for active TWAP orders...")
 
@@ -59,8 +58,8 @@ async def cancel_twap_order():
         target_pair = None
 
         # Find the matching asset
-        for pair in spot_meta.get('universe', []):
-            if pair.get('name') == coin:
+        for pair in spot_meta.get("universe", []):
+            if pair.get("name") == coin:
                 target_pair = pair
                 break
 
@@ -68,17 +67,19 @@ async def cancel_twap_order():
             print(f"❌ Could not find asset {coin} in spot universe")
             return
 
-        asset_index = target_pair.get('index')
-        asset_name = target_pair.get('name')
+        asset_index = target_pair.get("index")
+        asset_name = target_pair.get("name")
 
-        print(f"💰 Asset: {asset_name} (#{asset_index}, spot ID: {10000 + asset_index})")
+        print(
+            f"💰 Asset: {asset_name} (#{asset_index}, spot ID: {10000 + asset_index})"
+        )
         print(f"🔄 Cancelling TWAP order ID: {latest_twap_id}")
 
         # Prepare TWAP cancellation action
         twap_cancel_action = {
             "type": "twapCancel",
             "a": 10000 + asset_index,
-            "t": latest_twap_id
+            "t": latest_twap_id,
         }
 
         print("📋 TWAP cancel action:")
@@ -112,11 +113,19 @@ async def cancel_twap_order():
                 if response_data.get("status") == "success":
                     print(f"✅ TWAP order {latest_twap_id} cancelled successfully!")
                     print("🔍 Monitor this cancellation in your WebSocket stream")
-                elif isinstance(response_data.get("status"), dict) and "error" in response_data["status"]:
+                elif (
+                    isinstance(response_data.get("status"), dict)
+                    and "error" in response_data["status"]
+                ):
                     error_msg = response_data["status"]["error"]
                     print(f"❌ TWAP cancel failed: {error_msg}")
-                    if "never placed" in error_msg.lower() or "already canceled" in error_msg.lower():
-                        print("💡 TWAP order may have already finished or been cancelled")
+                    if (
+                        "never placed" in error_msg.lower()
+                        or "already canceled" in error_msg.lower()
+                    ):
+                        print(
+                            "💡 TWAP order may have already finished or been cancelled"
+                        )
                 else:
                     print(f"⚠️ Unexpected response: {response_data}")
             else:

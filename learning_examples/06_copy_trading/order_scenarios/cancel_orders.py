@@ -45,8 +45,8 @@ async def cancel_multiple_spot_orders():
         # Find all spot orders
         spot_orders = []
         for order in open_orders:
-            coin = order.get('coin', '')
-            if coin.startswith('@') or '/' in coin:  # Spot order indicators
+            coin = order.get("coin", "")
+            if coin.startswith("@") or "/" in coin:  # Spot order indicators
                 spot_orders.append(order)
 
         if not spot_orders:
@@ -61,11 +61,11 @@ async def cancel_multiple_spot_orders():
         failed_cancels = 0
 
         for order in spot_orders:
-            order_id = order.get('oid')
-            coin_field = order.get('coin')
-            side = "BUY" if order.get('side') == 'B' else "SELL"
-            size = order.get('sz')
-            price = order.get('limitPx')
+            order_id = order.get("oid")
+            coin_field = order.get("coin")
+            side = "BUY" if order.get("side") == "B" else "SELL"
+            size = order.get("sz")
+            price = order.get("limitPx")
 
             print(f"   Cancelling ID {order_id}: {side} {size} {coin_field} @ ${price}")
 

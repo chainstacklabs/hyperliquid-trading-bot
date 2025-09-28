@@ -47,8 +47,8 @@ async def place_spot_order():
 
             # Find PURR/USDC
             target_pair = None
-            for pair in spot_meta.get('universe', []):
-                if pair.get('name') == SYMBOL:
+            for pair in spot_meta.get("universe", []):
+                if pair.get("name") == SYMBOL:
                     target_pair = pair
                     break
 
@@ -56,12 +56,12 @@ async def place_spot_order():
                 print(f"❌ Could not find {SYMBOL} in spot universe")
                 return
 
-            pair_index = target_pair.get('index')
+            pair_index = target_pair.get("index")
 
             # Get current price
             if pair_index < len(asset_ctxs):
                 ctx = asset_ctxs[pair_index]
-                market_price = float(ctx.get('midPx', ctx.get('markPx', 0)))
+                market_price = float(ctx.get("midPx", ctx.get("markPx", 0)))
 
                 if market_price <= 0:
                     print(f"❌ Could not get valid price for {SYMBOL}")

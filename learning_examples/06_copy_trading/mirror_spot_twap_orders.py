@@ -91,51 +91,55 @@ async def get_spot_asset_info(info: Info, coin_field: str) -> Optional[dict]:
                 if index < len(asset_ctxs):
                     ctx = asset_ctxs[index]
                     # Try midPx first, fallback to markPx
-                    price = float(ctx.get('midPx', ctx.get('markPx', 0)))
+                    price = float(ctx.get("midPx", ctx.get("markPx", 0)))
 
                     if price > 0:
                         # Get token metadata for size decimals
-                        universe = spot_meta.get('universe', [])
-                        tokens = spot_meta.get('tokens', [])
+                        universe = spot_meta.get("universe", [])
+                        tokens = spot_meta.get("tokens", [])
 
                         # Find the pair info
                         pair_info = None
                         for pair in universe:
-                            if pair.get('index') == index:
+                            if pair.get("index") == index:
                                 pair_info = pair
                                 break
 
                         # Get token info for size decimals
                         size_decimals = 6  # Default fallback
-                        if pair_info and 'tokens' in pair_info:
-                            token_indices = pair_info['tokens']
+                        if pair_info and "tokens" in pair_info:
+                            token_indices = pair_info["tokens"]
                             if len(token_indices) > 0:
                                 base_token_index = token_indices[0]
                                 if base_token_index < len(tokens):
                                     token_info = tokens[base_token_index]
-                                    size_decimals = token_info.get('szDecimals', 6)
+                                    size_decimals = token_info.get("szDecimals", 6)
 
                         return {
-                            'price': price,
-                            'szDecimals': size_decimals,
-                            'coin': coin_field
+                            "price": price,
+                            "szDecimals": size_decimals,
+                            "coin": coin_field,
                         }
                     else:
-                        print(f"⚠️ No spot price for {coin_field} (midPx={ctx.get('midPx')}, markPx={ctx.get('markPx')})")
+                        print(
+                            f"⚠️ No spot price for {coin_field} (midPx={ctx.get('midPx')}, markPx={ctx.get('markPx')})"
+                        )
                         return None
                 else:
-                    print(f"⚠️ Spot index {coin_field} out of range (max: @{len(asset_ctxs)-1})")
+                    print(
+                        f"⚠️ Spot index {coin_field} out of range (max: @{len(asset_ctxs) - 1})"
+                    )
                     return None
 
         elif "/" in coin_field:
             # For PAIR/USDC format, need to find the corresponding @index first
             spot_meta = info.spot_meta()
-            universe = spot_meta.get('universe', [])
+            universe = spot_meta.get("universe", [])
 
             # Find the matching pair in spot universe
             for pair_info in universe:
-                if pair_info.get('name') == coin_field:
-                    pair_index = pair_info.get('index')
+                if pair_info.get("name") == coin_field:
+                    pair_index = pair_info.get("index")
                     # Get info using the index
                     return await get_spot_asset_info(info, f"@{pair_index}")
 
@@ -152,9 +156,7 @@ async def get_spot_asset_info(info: Info, coin_field: str) -> Optional[dict]:
 
 
 async def place_follower_twap_order(
-    exchange: Exchange,
-    info: Info,
-    leader_twap_data: dict
+    exchange: Exchange, info: Info, leader_twap_data: dict
 ) -> Optional[int]:
     """Place corresponding follower TWAP order for spot trades"""
     try:
@@ -176,8 +178,9 @@ async def place_follower_twap_order(
 
         # Calculate equivalent TWAP size based on fixed USDC value
         # Use current price to determine follower's size
-        follower_total_size = round(FIXED_ORDER_VALUE_USDC / asset_info['price'],
-                                   asset_info['szDecimals'])
+        follower_total_size = round(
+            FIXED_ORDER_VALUE_USDC / asset_info["price"], asset_info["szDecimals"]
+        )
 
         if follower_total_size <= 0:
             print(f"❌ Invalid TWAP size calculated for {coin_field}")
@@ -185,7 +188,9 @@ async def place_follower_twap_order(
 
         is_buy = side == "B"
 
-        print(f"🔄 Placing follower TWAP: {'BUY' if is_buy else 'SELL'} {follower_total_size} {coin_field} over {minutes}min")
+        print(
+            f"🔄 Placing follower TWAP: {'BUY' if is_buy else 'SELL'} {follower_total_size} {coin_field} over {minutes}min"
+        )
 
         # Get spot metadata to find asset index
         try:
@@ -193,11 +198,11 @@ async def place_follower_twap_order(
                 asset_index = int(coin_field[1:])
             elif "/" in coin_field:
                 spot_meta = info.spot_meta()
-                universe = spot_meta.get('universe', [])
+                universe = spot_meta.get("universe", [])
                 asset_index = None
                 for pair_info in universe:
-                    if pair_info.get('name') == coin_field:
-                        asset_index = pair_info.get('index')
+                    if pair_info.get("name") == coin_field:
+                        asset_index = pair_info.get("index")
                         break
                 if asset_index is None:
                     print(f"❌ Could not find asset index for {coin_field}")
@@ -215,8 +220,8 @@ async def place_follower_twap_order(
                     "s": float_to_wire(follower_total_size),  # Size
                     "r": reduce_only,  # Reduce-only
                     "m": minutes,  # Minutes
-                    "t": randomize  # Randomize
-                }
+                    "t": randomize,  # Randomize
+                },
             }
 
             # Sign and send TWAP order
@@ -260,10 +265,7 @@ async def place_follower_twap_order(
 
 
 async def cancel_follower_twap_order(
-    exchange: Exchange,
-    info: Info,
-    follower_twap_id: int,
-    coin_field: str
+    exchange: Exchange, info: Info, follower_twap_id: int, coin_field: str
 ) -> bool:
     """Cancel follower TWAP order"""
     try:
@@ -275,11 +277,11 @@ async def cancel_follower_twap_order(
                 asset_index = int(coin_field[1:])
             elif "/" in coin_field:
                 spot_meta = info.spot_meta()
-                universe = spot_meta.get('universe', [])
+                universe = spot_meta.get("universe", [])
                 asset_index = None
                 for pair_info in universe:
-                    if pair_info.get('name') == coin_field:
-                        asset_index = pair_info.get('index')
+                    if pair_info.get("name") == coin_field:
+                        asset_index = pair_info.get("index")
                         break
                 if asset_index is None:
                     print(f"❌ Could not find asset index for TWAP cancel {coin_field}")
@@ -292,7 +294,7 @@ async def cancel_follower_twap_order(
             twap_cancel_action = {
                 "type": "twapCancel",
                 "a": 10000 + asset_index,
-                "t": follower_twap_id
+                "t": follower_twap_id,
             }
 
             # Sign and send TWAP cancellation
@@ -318,7 +320,9 @@ async def cancel_follower_twap_order(
                     print("✅ Follower TWAP cancelled successfully")
                     return True
                 else:
-                    error_msg = response_data.get("status", {}).get("error", "Unknown error")
+                    error_msg = response_data.get("status", {}).get(
+                        "error", "Unknown error"
+                    )
                     print(f"❌ Failed to cancel follower TWAP: {error_msg}")
                     return False
             else:
@@ -334,11 +338,7 @@ async def cancel_follower_twap_order(
         return False
 
 
-async def handle_leader_twap_events(
-    data: dict,
-    exchange: Exchange,
-    info: Info
-):
+async def handle_leader_twap_events(data: dict, exchange: Exchange, info: Info):
     """Process leader's TWAP-related WebSocket events"""
     channel = data.get("channel")
 
@@ -357,7 +357,9 @@ async def handle_leader_twap_events(
             twap_key = f"{coin_field}_{state.get('side')}_{state.get('sz')}_{state.get('minutes')}_{state.get('timestamp')}"
             twap_status = twap_event.get("status", {}).get("status", "unknown")
 
-            print(f"LEADER TWAP {twap_status.upper()}: {state.get('side')} {state.get('sz')} {coin_field} (Key: {twap_key})")
+            print(
+                f"LEADER TWAP {twap_status.upper()}: {state.get('side')} {state.get('sz')} {coin_field} (Key: {twap_key})"
+            )
 
             # Skip follower TWAP orders - check if this key matches any we've created
             if twap_key in twap_mappings:
@@ -367,7 +369,9 @@ async def handle_leader_twap_events(
             if twap_status == "activated":
                 # New TWAP order placed - attempt to mirror it
                 try:
-                    follower_twap_id = await place_follower_twap_order(exchange, info, twap_event)
+                    follower_twap_id = await place_follower_twap_order(
+                        exchange, info, twap_event
+                    )
                     if follower_twap_id:
                         twap_mappings[twap_key] = follower_twap_id
                         print(f"Mapped TWAP {twap_key} -> {follower_twap_id}")
@@ -378,7 +382,9 @@ async def handle_leader_twap_events(
                 # TWAP cancelled/terminated - cancel corresponding follower TWAP
                 if twap_key in twap_mappings:
                     follower_twap_id = twap_mappings[twap_key]
-                    await cancel_follower_twap_order(exchange, info, follower_twap_id, coin_field)
+                    await cancel_follower_twap_order(
+                        exchange, info, follower_twap_id, coin_field
+                    )
                     del twap_mappings[twap_key]
 
     elif channel == "subscriptionResponse":
@@ -414,10 +420,7 @@ async def monitor_and_mirror_spot_twap_orders():
             # Subscribe to leader's user events (TWAP orders)
             events_subscription = {
                 "method": "subscribe",
-                "subscription": {
-                    "type": "userEvents",
-                    "user": LEADER_ADDRESS
-                }
+                "subscription": {"type": "userEvents", "user": LEADER_ADDRESS},
             }
 
             await websocket.send(json.dumps(events_subscription))
@@ -442,7 +445,9 @@ async def monitor_and_mirror_spot_twap_orders():
                 while running:
                     try:
                         # Wait for next message with timeout
-                        message = await asyncio.wait_for(message_queue.get(), timeout=1.0)
+                        message = await asyncio.wait_for(
+                            message_queue.get(), timeout=1.0
+                        )
 
                         try:
                             data = json.loads(message)
@@ -463,10 +468,7 @@ async def monitor_and_mirror_spot_twap_orders():
                         continue  # No message received, continue loop
 
             # Run both tasks concurrently
-            await asyncio.gather(
-                message_receiver(),
-                message_processor()
-            )
+            await asyncio.gather(message_receiver(), message_processor())
 
     except websockets.exceptions.ConnectionClosed:
         print("🔌 WebSocket connection closed")

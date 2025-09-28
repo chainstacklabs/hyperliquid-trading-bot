@@ -102,9 +102,11 @@ async def handle_order_events(data):
                 "iocCancelRejected": "⚠️",
                 "marketOrderNoLiquidityRejected": "💧",
                 "oracleRejected": "🔮",
-                "insufficientSpotBalanceRejected": "💰"
+                "insufficientSpotBalanceRejected": "💰",
             }.get(info["status"], "📋")
-            print(f"{status_emoji} {info['status'].upper()}: {info['side']} {info['size']} {info['asset']} @ {info['price']} [{info['market_type']}] (ID: {info['order_id']})")
+            print(
+                f"{status_emoji} {info['status'].upper()}: {info['side']} {info['size']} {info['asset']} @ {info['price']} [{info['market_type']}] (ID: {info['order_id']})"
+            )
 
     elif channel == "user":
         user_data = data.get("data", {})
@@ -113,7 +115,9 @@ async def handle_order_events(data):
         for fill in user_data.get("fills", []):
             info = format_trade_data(fill, "fill")
             pnl_text = f" | PnL: {info['pnl']}" if float(info["pnl"]) != 0 else ""
-            print(f"💰 FILL: {info['side']} {info['size']} {info['asset']} @ {info['price']} [{info['market_type']}] (Fee: {info['fee']}){pnl_text}")
+            print(
+                f"💰 FILL: {info['side']} {info['size']} {info['asset']} @ {info['price']} [{info['market_type']}] (Fee: {info['fee']}){pnl_text}"
+            )
 
         # Handle TWAP orders
         for twap_event in user_data.get("twapHistory", []):
@@ -122,18 +126,20 @@ async def handle_order_events(data):
                 "activated": "🔄",
                 "terminated": "🛑",
                 "completed": "✅",
-                "canceled": "❌"
+                "canceled": "❌",
             }.get(info["status"], "📋")
 
             twap_details = f"Duration: {info['minutes']}min"
-            if float(info['executed_size']) > 0:
+            if float(info["executed_size"]) > 0:
                 twap_details += f" | Executed: {info['executed_size']}/{info['size']}"
-            if info['reduce_only']:
+            if info["reduce_only"]:
                 twap_details += " | Reduce-Only"
-            if info['randomize']:
+            if info["randomize"]:
                 twap_details += " | Randomized"
 
-            print(f"{status_emoji} TWAP {info['status'].upper()}: {info['side']} {info['size']} {info['asset']} [{info['market_type']}] ({twap_details})")
+            print(
+                f"{status_emoji} TWAP {info['status'].upper()}: {info['side']} {info['size']} {info['asset']} [{info['market_type']}] ({twap_details})"
+            )
 
     elif channel == "subscriptionResponse":
         print("✅ Subscription confirmed")
@@ -228,7 +234,7 @@ async def monitor_leader_orders():
 
                         # Print raw WebSocket messages for debugging
                         # if data.get("channel") in ["orderUpdates", "user"]:
-                            # print(f"RAW MESSAGE: {json.dumps(data, indent=2)}")
+                        # print(f"RAW MESSAGE: {json.dumps(data, indent=2)}")
 
                         await handle_order_events(data)
                     except json.JSONDecodeError:
