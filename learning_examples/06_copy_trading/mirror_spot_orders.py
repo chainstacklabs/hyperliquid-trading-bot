@@ -24,7 +24,7 @@ BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
 
 # For tests, you can use the same wallet as a leader and follower.
 # Follower's orders will be ignored in the mirroring logic.
-LEADER_ADDRESS = "..."
+LEADER_ADDRESS = os.getenv("TESTNET_WALLET_ADDRESS")
 FIXED_ORDER_VALUE_USDC = 20.0  # Fixed $20 USDC per order
 
 running = False

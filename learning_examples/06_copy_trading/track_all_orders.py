@@ -13,9 +13,7 @@ import websockets
 load_dotenv()
 
 WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
-LEADER_ADDRESS = (
-    "..."  # Replace with leader's wallet address
-)
+LEADER_ADDRESS = os.getenv("TESTNET_WALLET_ADDRESS")
 
 
 def detect_market_type(coin_field):
@@ -48,6 +46,23 @@ def format_trade_data(data, data_type):
             "order_id": order.get("oid", "N/A"),
             "status": data.get("status", "unknown"),
         }
+    elif data_type == "twap":
+        state = data.get("state", {})
+        status = data.get("status", {})
+        coin_field = state.get("coin", "N/A")
+        return {
+            "asset": coin_field,
+            "market_type": detect_market_type(coin_field),
+            "side": "BUY" if state.get("side") == "B" else "SELL",
+            "size": state.get("sz", "N/A"),
+            "executed_size": state.get("executedSz", "0"),
+            "executed_notional": state.get("executedNtl", "0"),
+            "minutes": state.get("minutes", "N/A"),
+            "status": status.get("status", "unknown"),
+            "timestamp": state.get("timestamp", "N/A"),
+            "reduce_only": state.get("reduceOnly", False),
+            "randomize": state.get("randomize", False),
+        }
     else:  # fill
         coin_field = data.get("coin", "N/A")
         return {
@@ -71,14 +86,54 @@ async def handle_order_events(data):
             # Skip filled orders - we get better fill info from user channel
             if info["status"] == "filled":
                 continue
-            status_emoji = {"open": "🟢", "canceled": "❌", "filled": "✅"}.get(info["status"], "📋")
+
+            # See https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#query-order-status-by-oid-or-cloid
+            status_emoji = {
+                "open": "🟢",
+                "filled": "✅",
+                "canceled": "❌",
+                "rejected": "🚫",
+                "selfTradeCanceled": "🔄",
+                "delistedCanceled": "📋",
+                "scheduledCancel": "⏰",
+                "tickRejected": "📏",
+                "minTradeNtlRejected": "💸",
+                "badAloPxRejected": "🎯",
+                "iocCancelRejected": "⚠️",
+                "marketOrderNoLiquidityRejected": "💧",
+                "oracleRejected": "🔮",
+                "insufficientSpotBalanceRejected": "💰"
+            }.get(info["status"], "📋")
             print(f"{status_emoji} {info['status'].upper()}: {info['side']} {info['size']} {info['asset']} @ {info['price']} [{info['market_type']}] (ID: {info['order_id']})")
 
     elif channel == "user":
-        for fill in data.get("data", {}).get("fills", []):
-                info = format_trade_data(fill, "fill")
-                pnl_text = f" | PnL: {info['pnl']}" if float(info["pnl"]) != 0 else ""
-                print(f"💰 FILL: {info['side']} {info['size']} {info['asset']} @ {info['price']} [{info['market_type']}] (Fee: {info['fee']}){pnl_text}")
+        user_data = data.get("data", {})
+
+        # Handle fills
+        for fill in user_data.get("fills", []):
+            info = format_trade_data(fill, "fill")
+            pnl_text = f" | PnL: {info['pnl']}" if float(info["pnl"]) != 0 else ""
+            print(f"💰 FILL: {info['side']} {info['size']} {info['asset']} @ {info['price']} [{info['market_type']}] (Fee: {info['fee']}){pnl_text}")
+
+        # Handle TWAP orders
+        for twap_event in user_data.get("twapHistory", []):
+            info = format_trade_data(twap_event, "twap")
+            status_emoji = {
+                "activated": "🔄",
+                "terminated": "🛑",
+                "completed": "✅",
+                "canceled": "❌"
+            }.get(info["status"], "📋")
+
+            twap_details = f"Duration: {info['minutes']}min"
+            if float(info['executed_size']) > 0:
+                twap_details += f" | Executed: {info['executed_size']}/{info['size']}"
+            if info['reduce_only']:
+                twap_details += " | Reduce-Only"
+            if info['randomize']:
+                twap_details += " | Randomized"
+
+            print(f"{status_emoji} TWAP {info['status'].upper()}: {info['side']} {info['size']} {info['asset']} [{info['market_type']}] ({twap_details})")
 
     elif channel == "subscriptionResponse":
         print("✅ Subscription confirmed")

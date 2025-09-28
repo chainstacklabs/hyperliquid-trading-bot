@@ -13,9 +13,7 @@ import websockets
 load_dotenv()
 
 WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
-LEADER_ADDRESS = (
-    "..."  # Replace with leader's wallet address
-)
+LEADER_ADDRESS = os.getenv("TESTNET_WALLET_ADDRESS")
 
 
 async def monitor_raw_messages():
