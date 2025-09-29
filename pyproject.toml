@@ -13,6 +13,8 @@ dependencies = [
     "httpx>=0.28.1",
     "python-dotenv>=1.1.1",
     "websockets>=15.0.1",
+    "pandas>=2.2.0",
+    "nautilus-trader==1.219.0",
 ]
 
 [project.optional-dependencies]

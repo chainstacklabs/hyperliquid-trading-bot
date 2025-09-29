@@ -155,4 +155,9 @@ uv run src/run_bot.py --validate
 
 # Run bot in testnet mode (default)
 uv run src/run_bot.py
+
+# Run integration suite covering backtesting + Nautilus flows
+uv run python -m pytest tests/integration
 ```
+
+The integration suite exercises the Hyperliquid backtesting utilities end to end. Synthetic candle data is piped through `fetch_trades_to_csv`, transformed with Nautilus Trader's `TradeTickDataWrangler`, and replayed inside a lightweight `BacktestEngine` to ensure generated ticks remain consumable by strategies during regression checks.
