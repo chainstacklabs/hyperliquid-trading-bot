@@ -155,65 +155,6 @@ async def get_spot_asset_info(info: Info, coin_field: str) -> Optional[dict]:
         return None
 
 
-async def modify_follower_order(
-    exchange: Exchange,
-    info: Info,
-    follower_order_id: int,
-    leader_order_data: dict,
-    coin_field: str,
-) -> bool:
-    """Modify follower order to match leader's changes"""
-    try:
-        side = leader_order_data.get("side")  # "B" or "A"
-        new_price = float(leader_order_data.get("limitPx", 0))
-
-        if not is_spot_order(coin_field):
-            return False
-
-        # Get current asset info for proper sizing
-        asset_info = await get_spot_asset_info(info, coin_field)
-        if not asset_info:
-            print(f"❌ Could not get asset info for modify {coin_field}")
-            return False
-
-        # Calculate follower's equivalent size based on fixed USDC value
-        follower_size = round(
-            FIXED_ORDER_VALUE_USDC / new_price, asset_info["szDecimals"]
-        )
-
-        if follower_size <= 0:
-            print(f"❌ Invalid modified size calculated for {coin_field}")
-            return False
-
-        is_buy = side == "B"
-
-        print(
-            f"🔄 Modifying follower order {follower_order_id}: {'BUY' if is_buy else 'SELL'} {follower_size} {coin_field} @ ${new_price}"
-        )
-
-        # Modify the order
-        result = exchange.modify_order(
-            oid=follower_order_id,
-            name=coin_field,
-            is_buy=is_buy,
-            sz=follower_size,
-            limit_px=new_price,
-            order_type={"limit": {"tif": "Gtc"}},
-            reduce_only=False,
-        )
-
-        if result and result.get("status") == "ok":
-            print(f"✅ Follower order {follower_order_id} modified successfully!")
-            return True
-        else:
-            print(f"❌ Failed to modify follower order: {result}")
-            return False
-
-    except Exception as e:
-        print(f"❌ Error modifying follower order: {e}")
-        return False
-
-
 async def place_follower_order(
     exchange: Exchange, info: Info, leader_order_data: dict
 ) -> Optional[int]:
@@ -328,21 +269,11 @@ async def handle_leader_order_events(data: dict, exchange: Exchange, info: Info)
             )
 
             if status == "open":
-                if leader_order_id in order_mappings:
-                    # This is a modification of existing order
-                    follower_order_id = order_mappings[leader_order_id]
-                    if follower_order_id > 0:
-                        await modify_follower_order(
-                            exchange, info, follower_order_id, order, coin_field
-                        )
-                else:
-                    # New order - mirror it
-                    follower_order_id = await place_follower_order(
-                        exchange, info, order
-                    )
-                    if follower_order_id:
-                        order_mappings[leader_order_id] = follower_order_id
-                        print(f"Mapped {leader_order_id} -> {follower_order_id}")
+                # New order - mirror it
+                follower_order_id = await place_follower_order(exchange, info, order)
+                if follower_order_id:
+                    order_mappings[leader_order_id] = follower_order_id
+                    print(f"Mapped {leader_order_id} -> {follower_order_id}")
 
             elif status == "canceled" and leader_order_id in order_mappings:
                 follower_order_id = order_mappings[leader_order_id]

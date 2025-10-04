@@ -87,4 +87,6 @@ dmypy.json
 # Backup files
 *.bak
 *~
+
 COPY_TRAD_SPEC.md
+articles
