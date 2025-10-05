@@ -13,7 +13,7 @@ from hyperliquid.info import Info
 load_dotenv()
 
 CHAINSTACK_BASE_URL = os.getenv("HYPERLIQUID_CHAINSTACK_BASE_URL")
-PUBLIC_BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
+PUBLIC_BASE_URL = os.getenv("HYPERLIQUID_PUBLIC_BASE_URL")
 
 
 async def get_spot_assets() -> Optional[Set[str]]:

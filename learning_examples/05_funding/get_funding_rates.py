@@ -12,7 +12,7 @@ from hyperliquid.info import Info
 
 load_dotenv()
 
-BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
+BASE_URL = os.getenv("HYPERLIQUID_PUBLIC_BASE_URL")
 MIN_FUNDING_RATE = 0.0001  # 0.01% minimum threshold
 
 
