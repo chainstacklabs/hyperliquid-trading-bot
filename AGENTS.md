@@ -52,12 +52,15 @@ The codebase follows SOLID principles without overcomplicating the implementatio
 │   │   ├── strategy.py           # Trading strategy interface
 │   │   └── exchange.py           # Exchange adapter interface
 │   └── utils/                    # Shared utilities
+│       ├── events.py             # Event definitions
+│       └── exceptions.py         # Custom exception classes
 ├── learning_examples/            # Standalone educational scripts
-│   ├── 01_authentication/        # Connection and wallet setup
+│   ├── 01_websockets/            # Real-time data streams via WebSocket
 │   ├── 02_market_data/           # Price data and market info
 │   ├── 03_account_info/          # Account state and orders
 │   ├── 04_trading/               # Order placement and cancellation
-│   └── 05_websockets/            # Real-time data streams
+│   ├── 05_funding/               # Funding rates and spot/perp availability
+│   └── 06_copy_trading/          # Order mirroring and copy trading strategies
 └── .env                          # Environment variables (not in git)
 ```
 
@@ -142,11 +145,12 @@ ls bots/*.yaml
 - **Documentation**: Comprehensive docstrings explaining SPOT vs PERPS modes
 - **Testing**: All examples tested against real Hyperliquid testnet
 - **Categories**:
-  - Authentication: Wallet setup and connection
-  - Market Data: Price feeds and market information  
+  - WebSockets: Real-time data streams and price monitoring
+  - Market Data: Price feeds and market information
   - Account Info: Balance and position queries
   - Trading: Order placement and management
-  - WebSockets: Real-time data streams
+  - Funding: Funding rates and spot/perp availability checks
+  - Copy Trading: Order mirroring and automated copy trading strategies
 
   **Development style for learning examples**:
   - Place imports always at the top
@@ -155,13 +159,16 @@ ls bots/*.yaml
 **Usage:**
 ```bash
 # Run any learning example directly
+uv run learning_examples/01_websockets/realtime_prices.py
 uv run learning_examples/02_market_data/get_all_prices.py
 uv run learning_examples/04_trading/place_limit_order.py
+uv run learning_examples/05_funding/get_funding_rates.py
+uv run learning_examples/06_copy_trading/mirror_spot_orders.py
 ```
 
 ## Key Dependencies
 
-- `hyperliquid-python-sdk>=0.17.0` - Main SDK for Hyperliquid integration
+- `hyperliquid-python-sdk>=0.20.0` - Main SDK for Hyperliquid integration
 - `eth-account>=0.10.0` - Ethereum account management and signing
 - `websockets` - Real-time WebSocket connections
 - `pyyaml` - YAML configuration parsing
