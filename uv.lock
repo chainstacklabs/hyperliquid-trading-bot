@@ -329,7 +329,7 @@ wheels = [
 
 [[package]]
 name = "hyperliquid-python-sdk"
-version = "0.17.0"
+version = "0.20.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "eth-account" },
@@ -338,9 +338,9 @@ dependencies = [
     { name = "requests" },
     { name = "websocket-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/60/39/d223de20f2615e857211a607dc430b4129307634768ccd7125d6e3d6b92f/hyperliquid_python_sdk-0.17.0.tar.gz", hash = "sha256:986949aa24eee64b548975d81d9add1586a69ce14dc0d295225557b4f6536f13", size = 23685 }
+sdist = { url = "https://files.pythonhosted.org/packages/9c/08/9486623762d4a9c77ddcdc7124c0e2675c9091fefc713711a903f210f598/hyperliquid_python_sdk-0.20.1.tar.gz", hash = "sha256:7a59bf786108ac406bfea8cb303b1692105158e69dbea3b6da6a53aac633d67d", size = 24901 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/17/1c/14fafda2291fd6cbf09a1a5be7a4d5b067f80c6276c6988ad985fdd39738/hyperliquid_python_sdk-0.17.0-py3-none-any.whl", hash = "sha256:ec37290f228daa6d4b36de6696fbee614064cc33791d85895b49d990277c84d7", size = 23057 },
+    { url = "https://files.pythonhosted.org/packages/49/41/4a0212cbbf259500247594382aef39d4caf2d0b88a96c16a8c0ace83ce55/hyperliquid_python_sdk-0.20.1-py3-none-any.whl", hash = "sha256:6a32d0a7b6f66292a6a15ed3ec3c65fd7edb21da7f9424c8c668413cff4c635d", size = 24273 },
 ]
 
 [[package]]
@@ -375,7 +375,7 @@ requires-dist = [
     { name = "black", marker = "extra == 'dev'" },
     { name = "eth-account", specifier = ">=0.10.0" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "hyperliquid-python-sdk", specifier = ">=0.17.0" },
+    { name = "hyperliquid-python-sdk", specifier = ">=0.20.0" },
     { name = "isort", marker = "extra == 'dev'" },
     { name = "mypy", marker = "extra == 'dev'" },
     { name = "psutil", specifier = ">=7.0.0" },

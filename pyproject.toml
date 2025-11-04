@@ -5,7 +5,7 @@ description = "Extensible trading bot for Hyperliquid DEX"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "hyperliquid-python-sdk>=0.17.0",
+    "hyperliquid-python-sdk>=0.20.0",
     "eth-account>=0.10.0",
     "pyyaml>=6.0",
     "typing-extensions>=4.0",
