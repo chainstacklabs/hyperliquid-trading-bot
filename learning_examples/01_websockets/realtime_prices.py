@@ -14,7 +14,7 @@ from hyperliquid.info import Info
 load_dotenv()
 
 WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
-BASE_URL = os.getenv("HYPERLIQUID_CHAINSTACK_BASE_URL")
+BASE_URL = os.getenv("HYPERLIQUID_TESTNET_CHAINSTACK_BASE_URL")
 ASSETS_TO_TRACK = ["BTC", "ETH", "SOL", "DOGE", "AVAX"]
 
 # Global state for demo
@@ -142,7 +142,7 @@ async def main():
     if not WS_URL or not BASE_URL:
         print("❌ Missing environment variables")
         print(
-            "Set HYPERLIQUID_TESTNET_PUBLIC_WS_URL and HYPERLIQUID_TESTNET_PUBLIC_BASE_URL in your .env file"
+            "Set Hyperliquid endpoints in your .env file"
         )
         return
 
