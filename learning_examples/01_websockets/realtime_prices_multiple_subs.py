@@ -23,11 +23,9 @@ from hyperliquid.info import Info
 
 load_dotenv()
 
-# WS_URL = os.getenv("HYPERLIQUID_CHAINSTACK_WS_URL")
-WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
 
-# BASE_URL = os.getenv("HYPERLIQUID_CHAINSTACK_BASE_URL")
-BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
+WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
+BASE_URL = os.getenv("HYPERLIQUID_TESTNET_CHAINSTACK_BASE_URL")
 
 ASSETS_TO_TRACK = ["ETH"]  # for allMids prints
 TRADES_COIN = "ETH"        # for trades subscription
@@ -251,7 +249,7 @@ async def main():
 
     if not WS_URL or not BASE_URL:
         print("❌ Missing environment variables")
-        print("Set HYPERLIQUID_TESTNET_PUBLIC_WS_URL and HYPERLIQUID_TESTNET_PUBLIC_BASE_URL in your .env file")
+        print("Set Hyperliquid endpoints in your .env file")
         return
 
     client = HyperliquidWsClient(ws_url=WS_URL, base_url=BASE_URL)
