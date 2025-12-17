@@ -164,8 +164,9 @@ async def get_market_liquidity_info() -> None:
             test_assets = ["BTC", "ETH", "SOL"]  # Common high-liquidity assets
             
             for asset in test_assets:
+                # You can only use this endpoint on the official Hyperliquid public API
                 response = await client.post(
-                    f"{CHAINSTACK_BASE_URL}/info",
+                    f"{PUBLIC_BASE_URL}/info",
                     json={"type": "l2Book", "coin": asset},
                     headers={"Content-Type": "application/json"},
                 )
