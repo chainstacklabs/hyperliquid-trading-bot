@@ -13,7 +13,6 @@ from hyperliquid.info import Info
 
 load_dotenv()
 
-# WS_URL = os.getenv("HYPERLIQUID_CHAINSTACK_WS_URL")
 WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
 BASE_URL = os.getenv("HYPERLIQUID_TESTNET_CHAINSTACK_BASE_URL")
 ASSETS_TO_TRACK = ["BTC", "ETH", "SOL", "DOGE", "AVAX"]
