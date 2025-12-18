@@ -289,7 +289,7 @@ async def main():
 
     if eligible_assets:
         positive_funding_assets = [a for a in eligible_assets if a["eligible_for_arbitrage"]]
-        print(f"\nSummary:")
+        print("\nSummary:")
         print(f"   Total eligible base assets: {len(eligible_assets)}")
         print(f"   Assets with positive funding > {MIN_FUNDING_RATE*100:.4f}%: {len(positive_funding_assets)}")
 
