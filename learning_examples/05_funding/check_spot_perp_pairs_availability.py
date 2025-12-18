@@ -5,8 +5,8 @@ Checks which assets are available for BOTH spot markets/pairs and perpetual trad
 2) Prefers spotMetaAndAssetCtxs to get spot universe + spot contexts (for tradability + spot liquidity/price fields).
 
 NOTE:
-- This still treats “eligible” as: (base asset has a spot market) AND (base asset has a perp market).
-- For real arb, you’d also check spot book depth/spread per pair (not added here).
+- This still treats "eligible" as: (base asset has a spot market) AND (base asset has a perp market).
+- For real arb, you'd also check spot book depth/spread per pair (not added here).
 """
 
 import asyncio
