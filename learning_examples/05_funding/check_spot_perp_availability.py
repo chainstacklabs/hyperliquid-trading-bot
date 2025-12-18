@@ -1,4 +1,7 @@
 """
+DEPRECATED: Use check_spot_perp_pairs_availability.py instead.
+This script checks token metadata, not actual tradable markets, which can lead to false positives.
+
 Checks which assets are available for both spot and perpetual trading.
 Essential for funding arbitrage - need both markets to execute the strategy.
 """
@@ -14,6 +17,8 @@ load_dotenv()
 
 CHAINSTACK_BASE_URL = os.getenv("HYPERLIQUID_CHAINSTACK_BASE_URL")
 PUBLIC_BASE_URL = os.getenv("HYPERLIQUID_PUBLIC_BASE_URL")
+
+TEST_ASSETS = ["BTC", "ETH", "SOL"]
 
 
 async def get_spot_assets() -> Optional[Set[str]]:
@@ -136,7 +141,7 @@ async def find_arbitrage_eligible_assets() -> Optional[List[Dict]]:
             
             eligible_with_funding.sort(key=lambda x: x["funding_rate"], reverse=True)
             
-            print(f"\nFunding Rates for Eligible Assets:")
+            print("\nFunding Rates for Eligible Assets:")
             print("-" * 45)
             print(f"{'Asset':>6} {'Funding %':>10} {'Price':>12} {'Arbitrage':>10}")
             print("-" * 45)
@@ -155,17 +160,15 @@ async def find_arbitrage_eligible_assets() -> Optional[List[Dict]]:
 
 async def get_market_liquidity_info() -> None:
     """Get basic liquidity information for top arbitrage candidates"""
-    print(f"\nMarket Liquidity Analysis")
+    print("\nMarket Liquidity Analysis")
     print("-" * 30)
 
     try:
         async with httpx.AsyncClient() as client:
-            # Get order book depth for top candidates
-            test_assets = ["BTC", "ETH", "SOL"]  # Common high-liquidity assets
-            
-            for asset in test_assets:
+            for asset in TEST_ASSETS:
+                # You can only use this endpoint on the official Hyperliquid public API
                 response = await client.post(
-                    f"{CHAINSTACK_BASE_URL}/info",
+                    f"{PUBLIC_BASE_URL}/info",
                     json={"type": "l2Book", "coin": asset},
                     headers={"Content-Type": "application/json"},
                 )
@@ -203,7 +206,7 @@ async def main():
     
     if eligible_assets:
         positive_funding_assets = [a for a in eligible_assets if a["eligible_for_arbitrage"]]
-        print(f"\nSummary:")
+        print("\nSummary:")
         print(f"   Total eligible assets: {len(eligible_assets)}")
         print(f"   Assets with positive funding: {len(positive_funding_assets)}")
         
