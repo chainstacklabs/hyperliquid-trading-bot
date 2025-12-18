@@ -242,7 +242,7 @@ async def find_arbitrage_eligible_assets() -> Optional[List[Dict]]:
 
 async def get_market_liquidity_info() -> None:
     """Get basic perp liquidity information for a few high-liquidity assets."""
-    print(f"\nPerp Market Liquidity Analysis")
+    print("\nPerp Market Liquidity Analysis")
     print("-" * 35)
 
     try:
