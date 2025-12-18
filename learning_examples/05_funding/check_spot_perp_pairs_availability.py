@@ -21,7 +21,8 @@ load_dotenv()
 CHAINSTACK_BASE_URL = os.getenv("HYPERLIQUID_CHAINSTACK_BASE_URL")
 PUBLIC_BASE_URL = os.getenv("HYPERLIQUID_PUBLIC_BASE_URL")
 
-MIN_FUNDING_RATE = 0.0001  # 0.01% threshold
+TEST_ASSETS = ["BTC", "ETH", "SOL"]
+MIN_FUNDING_RATE = 0.0001
 
 
 async def get_spot_markets() -> Optional[Dict[str, Dict]]:
@@ -220,7 +221,7 @@ async def find_arbitrage_eligible_assets() -> Optional[List[Dict]]:
 
             eligible_with_funding.sort(key=lambda x: x["funding_rate"], reverse=True)
 
-            print(f"\nFunding Rates for Eligible Assets:")
+            print("\nFunding Rates for Eligible Assets:")
             print("-" * 90)
             print(f"{'Asset':>6} {'Funding %':>10} {'Perp Mark':>12} {'Arb?':>8}  {'Spot pairs (preview)':<40}")
             print("-" * 90)
@@ -247,9 +248,7 @@ async def get_market_liquidity_info() -> None:
 
     try:
         async with httpx.AsyncClient() as client:
-            test_assets = ["BTC", "ETH", "SOL"]
-
-            for asset in test_assets:
+            for asset in TEST_ASSETS:
                 response = await client.post(
                     f"{PUBLIC_BASE_URL}/info",
                     json={"type": "l2Book", "coin": asset},

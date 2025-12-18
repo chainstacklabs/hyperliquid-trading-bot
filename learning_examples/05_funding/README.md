@@ -1,6 +1,25 @@
-# How to monitor and operationalize funding
+# Funding Rate Examples
 
-Pre requisite: [Hyperliquid Docs: Funding](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/funding)
+This directory contains examples for monitoring and analyzing funding rates on Hyperliquid.
+
+## Scripts
+
+- **`get_funding_rates.py`** - Fetch current funding rates for perpetual markets
+- **`check_spot_perp_pairs_availability.py`** - Find assets tradable in both spot and perp markets (for funding arbitrage)
+- **`check_spot_perp_availability.py`** - DEPRECATED: Use `check_spot_perp_pairs_availability.py` instead
+
+## Why Funding Rates Matter
+
+Funding rates determine the cost of holding leveraged perpetual positions. Understanding and monitoring them is critical for:
+- Identifying funding arbitrage opportunities
+- Avoiding trades with structural headwinds
+- Managing position costs and risk
+
+---
+
+# How to Monitor and Operationalize Funding
+
+**Pre-requisite:** [Hyperliquid Docs: Funding](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/funding)
 ```
 Funding $ = Position Size × Oracle Price × Funding Rate
 ```
@@ -35,7 +54,7 @@ Monitoring funding lets you
 
 - Receiving funding → you’re on the correcting side
 
-“Trade horizon > 1 funding period” means your strategy ecpects to hold the position long enough to cross at least one funding event (funding is hourly).
+"Trade horizon > 1 funding period" means your strategy expects to hold the position long enough to cross at least one funding event (funding is hourly).
 
 ```
 If [paying funding] AND [trade horizon > 1 funding period] → penalize entry
@@ -55,7 +74,7 @@ Penalizing entry includes one or more:
 
 You can encode penalize in logic as follows:
 
-*Size penality*
+*Size penalty*
 
 ```
 Effective size = base size × funding_penalty_factor
@@ -173,7 +192,7 @@ Funding reduces equity, and therefore liquidation price moves toward you.
 
 If normal market noise is large enough to reach your liquidation price, you are already dead but you just don’t know it yet.
 
-ATR = Average True Range. ATR is a measure of how much an asset typically moves overa given time window. You can understand how big normal price moves are currently.
+ATR = Average True Range. ATR is a measure of how much an asset typically moves over a given time window. You can understand how big normal price moves are currently.
 
 Liquidation distance is how far price can move against you before liquidation.
 
