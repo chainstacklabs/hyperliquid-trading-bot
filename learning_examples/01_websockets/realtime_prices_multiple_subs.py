@@ -25,7 +25,9 @@ load_dotenv()
 
 
 WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
-BASE_URL = os.getenv("HYPERLIQUID_TESTNET_CHAINSTACK_BASE_URL")
+BASE_URL = os.getenv("HYPERLIQUID_TESTNET_CHAINSTACK_BASE_URL") or os.getenv(
+    "HYPERLIQUID_TESTNET_PUBLIC_BASE_URL"
+)
 
 ASSETS_TO_TRACK = ["ETH"]  # for allMids prints
 TRADES_COIN = "ETH"        # for trades subscription
