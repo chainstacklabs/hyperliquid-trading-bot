@@ -19,8 +19,11 @@ load_dotenv()
 # You can only use this endpoint on the official Hyperliquid public API.
 # It is not available through Chainstack, as the open-source node implementation does not support it yet.
 BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
-SYMBOL = "BTC"
-ORDER_SIZE = 0.001  # Small test size
+# HIP-3: optional builder-deployed dex name. Empty = main perp.
+# When set, SYMBOL should be the namespaced name (e.g. SYMBOL="felix:CRCL").
+DEX = os.getenv("DEX", "")
+SYMBOL = os.getenv("SYMBOL", "BTC")
+ORDER_SIZE = float(os.getenv("ORDER_SIZE", "0.001"))
 PRICE_OFFSET_PCT = -5  # 5% below market for buy order
 
 
@@ -34,7 +37,7 @@ async def method_sdk(private_key: str) -> Optional[str]:
         exchange = Exchange(wallet, BASE_URL)
         info = Info(BASE_URL, skip_ws=True)
 
-        all_prices = info.all_mids()
+        all_prices = info.all_mids(dex=DEX)
         market_price = float(all_prices.get(SYMBOL, 0))
 
         if market_price == 0:

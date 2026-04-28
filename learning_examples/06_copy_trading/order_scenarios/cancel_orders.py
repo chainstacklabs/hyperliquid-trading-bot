@@ -54,37 +54,32 @@ async def cancel_multiple_spot_orders():
             print("💡 Only perpetual orders are open")
             return
 
-        print(f"🎯 Found {len(spot_orders)} spot orders to cancel:")
-
-        # Cancel each order individually
-        successful_cancels = 0
-        failed_cancels = 0
-
+        print(f"🎯 Found {len(spot_orders)} spot orders to cancel via bulk_cancel:")
         for order in spot_orders:
-            order_id = order.get("oid")
-            coin_field = order.get("coin")
-            side = "BUY" if order.get("side") == "B" else "SELL"
-            size = order.get("sz")
-            price = order.get("limitPx")
+            print(
+                f"   - ID {order.get('oid')}: "
+                f"{'BUY' if order.get('side') == 'B' else 'SELL'} "
+                f"{order.get('sz')} {order.get('coin')} @ ${order.get('limitPx')}"
+            )
 
-            print(f"   Cancelling ID {order_id}: {side} {size} {coin_field} @ ${price}")
+        # Single bulk_cancel call: one signed action, one network round trip,
+        # atomic from the WS observer's perspective. This is what the
+        # docstring promises — the prior loop-of-singles version had drifted.
+        cancel_requests = [
+            {"coin": o.get("coin"), "oid": o.get("oid")} for o in spot_orders
+        ]
+        result = exchange.bulk_cancel(cancel_requests)
 
-            try:
-                result = exchange.cancel(name=coin_field, oid=order_id)
+        if not (result and result.get("status") == "ok"):
+            print(f"❌ bulk_cancel failed: {result}")
+            return
 
-                if result and result.get("status") == "ok":
-                    print(f"   ✅ Order {order_id} cancelled successfully")
-                    successful_cancels += 1
-                else:
-                    print(f"   ❌ Order {order_id} cancel failed: {result}")
-                    failed_cancels += 1
-            except Exception as e:
-                print(f"   ❌ Order {order_id} cancel error: {e}")
-                failed_cancels += 1
-
-        print(f"📋 Cancel Summary:")
-        print(f"   ✅ Successful: {successful_cancels}")
-        print(f"   ❌ Failed: {failed_cancels}")
+        statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+        successful = sum(1 for s in statuses if s == "success")
+        print(f"📋 Cancel Summary: {successful}/{len(statuses)} succeeded")
+        for req, status in zip(cancel_requests, statuses):
+            mark = "✅" if status == "success" else "❌"
+            print(f"   {mark} oid {req['oid']}: {status}")
         print(f"🔍 Monitor these cancellations in your WebSocket stream")
 
     except Exception as e:

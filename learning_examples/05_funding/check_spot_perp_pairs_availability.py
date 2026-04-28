@@ -23,6 +23,9 @@ PUBLIC_BASE_URL = os.getenv("HYPERLIQUID_PUBLIC_BASE_URL")
 
 TEST_ASSETS = ["BTC", "ETH", "SOL"]
 MIN_FUNDING_RATE = 0.0001
+# HIP-3: optional builder-deployed dex name. Empty = main perp.
+# Spot is global (not dex-scoped), so DEX only applies to the perp side.
+DEX = os.getenv("DEX", "")
 
 
 async def get_spot_markets() -> Optional[Dict[str, Dict]]:
@@ -139,7 +142,7 @@ async def get_perp_assets() -> Optional[Set[str]]:
 
     try:
         info = Info(CHAINSTACK_BASE_URL, skip_ws=True)
-        meta = info.meta()
+        meta = info.meta(dex=DEX)
         perp_assets = set()
 
         if "universe" in meta:
@@ -191,10 +194,17 @@ async def find_arbitrage_eligible_assets() -> Optional[List[Dict]]:
         pairs_preview = ", ".join(pairs[:6]) + (f" ...(+{len(pairs)-6})" if len(pairs) > 6 else "")
         print(f"   {base:>6}: {pairs_preview}")
 
-    # Attach current perp funding for eligible assets
+    # Attach current perp funding for eligible assets. metaAndAssetCtxs is
+    # the SDK helper for the main perp; for a HIP-3 dex we drop to the raw
+    # post since the SDK helper doesn't take a dex param.
     try:
         info = Info(PUBLIC_BASE_URL, skip_ws=True)
-        meta_and_contexts = info.meta_and_asset_ctxs()
+        if DEX:
+            meta_and_contexts = info.post(
+                "/info", {"type": "metaAndAssetCtxs", "dex": DEX}
+            )
+        else:
+            meta_and_contexts = info.meta_and_asset_ctxs()
 
         eligible_with_funding = []
 

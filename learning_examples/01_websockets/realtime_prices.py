@@ -14,8 +14,14 @@ from hyperliquid.info import Info
 load_dotenv()
 
 WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
-BASE_URL = os.getenv("HYPERLIQUID_TESTNET_CHAINSTACK_BASE_URL")
-ASSETS_TO_TRACK = ["BTC", "ETH", "SOL", "DOGE", "AVAX"]
+BASE_URL = os.getenv("HYPERLIQUID_TESTNET_CHAINSTACK_BASE_URL") or os.getenv(
+    "HYPERLIQUID_TESTNET_PUBLIC_BASE_URL"
+)
+# HIP-3: optional builder-deployed dex name. Empty = main perp.
+DEX = os.getenv("DEX", "")
+# When DEX is set the universe is HIP-3-namespaced (e.g. "felix:CRCL"); show
+# everything from that universe instead of the default majors list.
+ASSETS_TO_TRACK = ["BTC", "ETH", "SOL", "DOGE", "AVAX"] if not DEX else None
 
 # Global state for demo
 prices = {}
@@ -35,13 +41,13 @@ async def load_symbol_mapping():
     global id_to_symbol
 
     info = Info(BASE_URL, skip_ws=True)
-    meta = info.meta()
+    meta = info.meta(dex=DEX)
 
     for i, asset_info in enumerate(meta["universe"]):
         symbol = asset_info["name"]
         id_to_symbol[str(i)] = symbol
 
-    print(f"Loaded {len(id_to_symbol)} asset mappings")
+    print(f"Loaded {len(id_to_symbol)} asset mappings (dex={DEX or 'main'})")
 
 
 async def handle_price_message(data):
@@ -59,7 +65,7 @@ async def handle_price_message(data):
             asset_id = asset_id_with_at.lstrip("@")
             symbol = id_to_symbol.get(asset_id)
 
-            if symbol and symbol in ASSETS_TO_TRACK:
+            if symbol and (ASSETS_TO_TRACK is None or symbol in ASSETS_TO_TRACK):
                 try:
                     new_price = float(price_str)
                     old_price = prices.get(symbol)
@@ -102,13 +108,14 @@ async def monitor_prices():
         async with websockets.connect(WS_URL) as websocket:
             print("✅ WebSocket connected!")
 
-            subscribe_message = {
-                "method": "subscribe",
-                "subscription": {"type": "allMids"},
-            }
+            subscription = {"type": "allMids"}
+            if DEX:
+                subscription["dex"] = DEX
+            subscribe_message = {"method": "subscribe", "subscription": subscription}
 
             await websocket.send(json.dumps(subscribe_message))
-            print(f"📊 Monitoring {', '.join(ASSETS_TO_TRACK)}")
+            label = ", ".join(ASSETS_TO_TRACK) if ASSETS_TO_TRACK else f"all {DEX} pairs"
+            print(f"📊 Monitoring {label}")
             print("=" * 40)
 
             running = True
