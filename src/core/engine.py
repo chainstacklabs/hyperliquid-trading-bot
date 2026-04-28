@@ -478,17 +478,28 @@ class TradingEngine:
         is_long: bool,
         tp_pct: Optional[float],
         sl_pct: Optional[float],
+        leverage: float = 1.0,
     ) -> Tuple[Optional[float], Optional[float]]:
-        """Compute absolute TP/SL prices from entry and percentage offsets.
+        """Compute absolute TP/SL trigger prices from margin-relative offsets.
+
+        `tp_pct` / `sl_pct` are margin-relative percentages (matching how
+        StopLossRule / TakeProfitRule interpret the same config keys: a 5%
+        stop on a 10x leveraged perp = stop at 5% loss against committed
+        margin = 0.5% adverse price move). Divides by `leverage` so the
+        same config is consistent between polling and grouped tpsl_mode.
 
         For a long: TP is above entry, SL is below. For a short: inverted.
         """
-        if tp_pct is not None:
-            tp = entry * (1 + tp_pct / 100) if is_long else entry * (1 - tp_pct / 100)
+        leverage = leverage if leverage > 0 else 1.0
+        tp_price_pct = tp_pct / leverage if tp_pct is not None else None
+        sl_price_pct = sl_pct / leverage if sl_pct is not None else None
+
+        if tp_price_pct is not None:
+            tp = entry * (1 + tp_price_pct / 100) if is_long else entry * (1 - tp_price_pct / 100)
         else:
             tp = None
-        if sl_pct is not None:
-            sl = entry * (1 - sl_pct / 100) if is_long else entry * (1 + sl_pct / 100)
+        if sl_price_pct is not None:
+            sl = entry * (1 - sl_price_pct / 100) if is_long else entry * (1 + sl_price_pct / 100)
         else:
             sl = None
         return tp, sl
@@ -532,7 +543,11 @@ class TradingEngine:
                     self.logger.debug(f"prior TPSL cancel skipped ({prior_oid}): {e}")
 
         tp_price, sl_price = self._tpsl_prices(
-            position.entry_price, position.size > 0, tp_pct, sl_pct
+            position.entry_price,
+            position.size > 0,
+            tp_pct,
+            sl_pct,
+            leverage=position.leverage,
         )
 
         try:

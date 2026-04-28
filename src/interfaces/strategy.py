@@ -56,7 +56,14 @@ class MarketData:
 
 @dataclass
 class Position:
-    """Current position information"""
+    """Current position information.
+
+    `margin_used` and `return_on_equity` are populated for perps and used by
+    risk rules to evaluate loss/profit margin-relative rather than notional-
+    relative (a 1% price move on a 10x leveraged perp is a 10% margin move).
+    `return_on_equity` is signed: positive = profit, negative = loss, in
+    fractional units (0.05 = +5%). Spot positions leave both at 0.
+    """
 
     asset: str
     size: float  # Positive = long, negative = short
@@ -65,6 +72,9 @@ class Position:
     unrealized_pnl: float
     timestamp: float
     dex: Optional[str] = None
+    margin_used: float = 0.0
+    return_on_equity: float = 0.0
+    leverage: float = 1.0
 
 
 class TradingStrategy(ABC):
