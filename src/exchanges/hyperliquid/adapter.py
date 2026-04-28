@@ -130,16 +130,19 @@ class HyperliquidAdapter(ExchangeAdapter):
 
         try:
             spot_meta = self.info.spot_meta()
+            tokens = spot_meta.get("tokens", [])
             for pair in spot_meta.get("universe", []):
                 name = pair.get("name")
-                base_idx = pair.get("tokens", [None])[0]
-                tokens = spot_meta.get("tokens", [])
-                if name is not None and base_idx is not None and base_idx < len(tokens):
+                pair_tokens = pair.get("tokens") or []
+                if not name or not pair_tokens:
+                    continue
+                base_idx = pair_tokens[0]
+                if 0 <= base_idx < len(tokens):
                     self._spot_sz_decimals[name] = int(
                         tokens[base_idx].get("szDecimals", 0)
                     )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️ Failed to load spot metadata: {e}")
 
     def _check_agent_approval(self, signer_address: str) -> None:
         """Warn if signer is an agent that isn't approved for the master account.
@@ -170,9 +173,12 @@ class HyperliquidAdapter(ExchangeAdapter):
         return "/" in asset or asset.startswith("@")
 
     def _sz_decimals(self, asset: str) -> int:
-        if self._is_spot(asset):
-            return self._spot_sz_decimals.get(asset, 0)
-        return self._perp_sz_decimals.get(asset, 0)
+        cache = self._spot_sz_decimals if self._is_spot(asset) else self._perp_sz_decimals
+        if asset not in cache:
+            raise RuntimeError(
+                f"Missing precision metadata for {asset}; meta()/spot_meta() may have failed at connect"
+            )
+        return cache[asset]
 
     def _round_price(self, asset: str, price: float) -> float:
         max_dec = (
@@ -181,13 +187,20 @@ class HyperliquidAdapter(ExchangeAdapter):
             else self.PERP_PX_MAX_DECIMALS
         )
         px_decimals = max(0, max_dec - self._sz_decimals(asset))
-        sig5 = float(f"{float(price):.5g}")
+        # Hyperliquid: integer prices are exempt from the 5-sig-fig rule
+        # (https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size)
         if price == int(price):
             return float(int(price))
+        sig5 = float(f"{float(price):.5g}")
         return round(sig5, px_decimals)
 
     def _round_size(self, asset: str, size: float) -> float:
-        return round(float(size), self._sz_decimals(asset))
+        rounded = round(float(size), self._sz_decimals(asset))
+        if float(size) > 0 and rounded <= 0:
+            raise RuntimeError(
+                f"Size {size} for {asset} rounds to 0 at szDecimals={self._sz_decimals(asset)}; below minimum increment"
+            )
+        return rounded
 
     async def disconnect(self) -> None:
         """Disconnect from Hyperliquid"""

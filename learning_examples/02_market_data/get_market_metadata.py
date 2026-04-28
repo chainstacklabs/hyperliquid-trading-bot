@@ -19,7 +19,8 @@ PERP_PX_MAX_DECIMALS = 6
 
 
 def price_tick(sz_decimals: int) -> float:
-    return 10 ** -(PERP_PX_MAX_DECIMALS - sz_decimals)
+    px_decimals = max(0, PERP_PX_MAX_DECIMALS - sz_decimals)
+    return 10**-px_decimals
 
 
 async def method_1_sdk():
