@@ -74,6 +74,7 @@ class MarketInfo:
     price_precision: int
     size_precision: int
     is_active: bool
+    min_notional: float = 10.0
 
 
 class ExchangeAdapter(ABC):

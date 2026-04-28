@@ -28,11 +28,25 @@ class HyperliquidAdapter(ExchangeAdapter):
     the clean exchange interface that strategies can use.
     """
 
-    def __init__(self, private_key: str, testnet: bool = True):
+    PERP_PX_MAX_DECIMALS = 6
+    SPOT_PX_MAX_DECIMALS = 8
+    MIN_NOTIONAL_USD = 10.0
+
+    def __init__(
+        self,
+        private_key: str,
+        testnet: bool = True,
+        account_address: Optional[str] = None,
+    ):
         super().__init__("Hyperliquid")
         self.private_key = private_key
         self.testnet = testnet
         self.paper_trading = False
+
+        # When the private key is an agent/API wallet, account_address is the
+        # master address that holds funds. If not provided, falls back to the
+        # signer's own address (i.e. signer == master).
+        self.account_address = account_address
 
         # Hyperliquid SDK components (will be initialized on connect)
         self.info = None
@@ -40,6 +54,10 @@ class HyperliquidAdapter(ExchangeAdapter):
 
         # Endpoint router for smart routing
         self.endpoint_router = get_endpoint_router(testnet)
+
+        # Asset metadata caches populated on connect
+        self._perp_sz_decimals: Dict[str, int] = {}
+        self._spot_sz_decimals: Dict[str, int] = {}
 
     async def connect(self) -> bool:
         """Connect to Hyperliquid with smart endpoint routing"""
@@ -71,15 +89,19 @@ class HyperliquidAdapter(ExchangeAdapter):
                 else exchange_url
             )
 
-            # Create wallet from private key
             wallet = Account.from_key(self.private_key)
+            self.account_address = self.account_address or wallet.address
 
-            # Initialize SDK components with proper endpoint routing
             self.info = Info(info_base_url, skip_ws=True)
-            self.exchange = Exchange(wallet, exchange_base_url)
+            self.exchange = Exchange(
+                wallet, exchange_base_url, account_address=self.account_address
+            )
 
-            # Test connection
-            user_state = self.info.user_state(self.exchange.wallet.address)
+            self._load_asset_metadata()
+            self._check_agent_approval(wallet.address)
+
+            # Test connection against the master account
+            self.info.user_state(self.account_address)
 
             self.is_connected = True
             print(
@@ -87,13 +109,98 @@ class HyperliquidAdapter(ExchangeAdapter):
             )
             print(f"📡 Info endpoint: {info_url}")
             print(f"💱 Exchange endpoint: {exchange_url}")
-            print(f"🔑 Wallet address: {self.exchange.wallet.address}")
+            print(f"🔑 Signer (agent): {wallet.address}")
+            print(f"🏦 Account (master): {self.account_address}")
             return True
 
         except Exception as e:
             print(f"❌ Failed to connect to Hyperliquid: {e}")
             self.is_connected = False
             return False
+
+    def _load_asset_metadata(self) -> None:
+        try:
+            meta = self.info.meta()
+            for asset_info in meta.get("universe", []):
+                name = asset_info.get("name")
+                if name is not None:
+                    self._perp_sz_decimals[name] = int(asset_info.get("szDecimals", 0))
+        except Exception as e:
+            print(f"⚠️ Failed to load perp metadata: {e}")
+
+        try:
+            spot_meta = self.info.spot_meta()
+            tokens = spot_meta.get("tokens", [])
+            for pair in spot_meta.get("universe", []):
+                name = pair.get("name")
+                pair_tokens = pair.get("tokens") or []
+                if not name or not pair_tokens:
+                    continue
+                base_idx = pair_tokens[0]
+                if 0 <= base_idx < len(tokens):
+                    self._spot_sz_decimals[name] = int(
+                        tokens[base_idx].get("szDecimals", 0)
+                    )
+        except Exception as e:
+            print(f"⚠️ Failed to load spot metadata: {e}")
+
+    def _check_agent_approval(self, signer_address: str) -> None:
+        """Warn if signer is an agent that isn't approved for the master account.
+
+        When signer == account_address the wallet is acting as its own master and
+        no approval is needed. Otherwise the signer must appear in the master's
+        extraAgents list, else order placements will fail with opaque signing
+        errors at runtime.
+        """
+        if signer_address.lower() == self.account_address.lower():
+            return
+        try:
+            agents = self.info.post(
+                "/info", {"type": "extraAgents", "user": self.account_address}
+            )
+            approved = {a.get("address", "").lower() for a in agents or []}
+            if signer_address.lower() not in approved:
+                print(
+                    f"⚠️ Agent {signer_address} is not approved on master "
+                    f"{self.account_address}. Orders will be rejected. "
+                    f"Approve via https://app.hyperliquid"
+                    f"{'-testnet' if self.testnet else ''}.xyz/API"
+                )
+        except Exception as e:
+            print(f"⚠️ Could not verify agent approval: {e}")
+
+    def _is_spot(self, asset: str) -> bool:
+        return "/" in asset or asset.startswith("@")
+
+    def _sz_decimals(self, asset: str) -> int:
+        cache = self._spot_sz_decimals if self._is_spot(asset) else self._perp_sz_decimals
+        if asset not in cache:
+            raise RuntimeError(
+                f"Missing precision metadata for {asset}; meta()/spot_meta() may have failed at connect"
+            )
+        return cache[asset]
+
+    def _round_price(self, asset: str, price: float) -> float:
+        max_dec = (
+            self.SPOT_PX_MAX_DECIMALS
+            if self._is_spot(asset)
+            else self.PERP_PX_MAX_DECIMALS
+        )
+        px_decimals = max(0, max_dec - self._sz_decimals(asset))
+        # Hyperliquid: integer prices are exempt from the 5-sig-fig rule
+        # (https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size)
+        if price == int(price):
+            return float(int(price))
+        sig5 = float(f"{float(price):.5g}")
+        return round(sig5, px_decimals)
+
+    def _round_size(self, asset: str, size: float) -> float:
+        rounded = round(float(size), self._sz_decimals(asset))
+        if float(size) > 0 and rounded <= 0:
+            raise RuntimeError(
+                f"Size {size} for {asset} rounds to 0 at szDecimals={self._sz_decimals(asset)}; below minimum increment"
+            )
+        return rounded
 
     async def disconnect(self) -> None:
         """Disconnect from Hyperliquid"""
@@ -102,27 +209,47 @@ class HyperliquidAdapter(ExchangeAdapter):
         self.exchange = None
         print("🔌 Disconnected from Hyperliquid")
 
+    PERP_QUOTE_ALIASES = {"USD", "USDC", "USDC_PERP"}
+
     async def get_balance(self, asset: str) -> Balance:
-        """Get account balance for an asset"""
+        """Get account balance for an asset.
+
+        Asset names in PERP_QUOTE_ALIASES (USD / USDC / USDC_PERP) return the
+        cross-margin account value. Any other name reads from spot_user_state.
+        Note: "USDC" is treated as the perp quote here because the bot's grid
+        configs default to that — to read a spot USDC balance, look up the pair
+        directly via spot_meta.
+        """
         if not self.is_connected:
             raise RuntimeError("Not connected to exchange")
 
         try:
-            user_state = self.info.user_state(self.exchange.wallet.address)
+            address = self.account_address
 
-            # Find asset balance
-            for balance_info in user_state.get("balances", []):
+            if asset.upper() in self.PERP_QUOTE_ALIASES:
+                user_state = self.info.user_state(address)
+                summary = user_state.get("crossMarginSummary", {})
+                account_value = float(summary.get("accountValue", 0))
+                margin_used = float(summary.get("totalMarginUsed", 0))
+                available = max(0.0, account_value - margin_used)
+                return Balance(
+                    asset=asset,
+                    available=available,
+                    locked=margin_used,
+                    total=account_value,
+                )
+
+            spot_state = self.info.spot_user_state(address)
+            for balance_info in spot_state.get("balances", []):
                 coin = balance_info.get("coin", "")
                 if coin == asset:
                     total = float(balance_info.get("total", 0))
                     hold = float(balance_info.get("hold", 0))
                     available = total - hold
-
                     return Balance(
                         asset=asset, available=available, locked=hold, total=total
                     )
 
-            # Asset not found, return zero balance
             return Balance(asset=asset, available=0.0, locked=0.0, total=0.0)
 
         except Exception as e:
@@ -155,65 +282,47 @@ class HyperliquidAdapter(ExchangeAdapter):
             # Convert to Hyperliquid format
             is_buy = order.side == OrderSide.BUY
 
-            # Import the OrderType from the SDK
             from hyperliquid.utils.signing import OrderType as HLOrderType
 
-            # Round values to proper precision for Hyperliquid
-            def round_price(price):
-                """Round price to proper tick size for BTC (whole dollars)"""
-                if order.asset == "BTC":
-                    # BTC appears to require whole dollar prices
-                    return float(int(price))
-                else:
-                    # For other assets, use 2 decimal places
-                    return round(float(price), 2)
-
-            def round_size(size):
-                """Round size to proper precision based on szDecimals (5 for BTC)"""
-                return round(float(size), 5)  # BTC has szDecimals=5
-
-            # Ensure minimum size requirements
-            min_size = 0.0001  # Minimum BTC size
-            rounded_size = max(round_size(order.size), min_size)
+            rounded_size = self._round_size(order.asset, order.size)
 
             if order.order_type == OrderType.MARKET:
-                # Market order - use limit order with current market price
                 market_price = await self.get_market_price(order.asset)
-                # Adjust price slightly to ensure fill for market orders
-                adjusted_price = round_price(market_price * (1.01 if is_buy else 0.99))
+                slippage = 1.01 if is_buy else 0.99
+                adjusted_price = self._round_price(
+                    order.asset, market_price * slippage
+                )
                 result = self.exchange.order(
                     name=order.asset,
                     is_buy=is_buy,
                     sz=rounded_size,
                     limit_px=adjusted_price,
-                    order_type=HLOrderType(
-                        {"limit": {"tif": "Ioc"}}
-                    ),  # Immediate or Cancel for market-like behavior
+                    order_type=HLOrderType({"limit": {"tif": "Ioc"}}),
                     reduce_only=False,
                 )
             else:
-                # Limit order
-                rounded_price = round_price(order.price)
+                rounded_price = self._round_price(order.asset, order.price)
                 result = self.exchange.order(
                     name=order.asset,
                     is_buy=is_buy,
                     sz=rounded_size,
                     limit_px=rounded_price,
-                    order_type=HLOrderType(
-                        {"limit": {"tif": "Gtc"}}
-                    ),  # Good Till Cancel
+                    order_type=HLOrderType({"limit": {"tif": "Gtc"}}),
                     reduce_only=False,
                 )
 
-            # Extract order ID from result
-            if result and "status" in result and result["status"] == "ok":
-                if "response" in result and "data" in result["response"]:
-                    response_data = result["response"]["data"]
-                    if "statuses" in response_data and response_data["statuses"]:
-                        status_info = response_data["statuses"][0]
-                        if "resting" in status_info:
-                            order_id = str(status_info["resting"]["oid"])
-                            return order_id
+            if result and result.get("status") == "ok":
+                statuses = (
+                    result.get("response", {}).get("data", {}).get("statuses", [])
+                )
+                if statuses:
+                    status_info = statuses[0]
+                    if "resting" in status_info:
+                        return str(status_info["resting"]["oid"])
+                    if "filled" in status_info:
+                        return str(status_info["filled"]["oid"])
+                    if "error" in status_info:
+                        raise RuntimeError(status_info["error"])
 
             raise RuntimeError(f"Failed to place order: {result}")
 
@@ -230,7 +339,7 @@ class HyperliquidAdapter(ExchangeAdapter):
             oid = int(exchange_order_id)
 
             # Find the asset name for this order by querying open orders
-            open_orders = self.info.open_orders(self.exchange.wallet.address)
+            open_orders = self.info.open_orders(self.account_address)
             target_order = None
 
             for order in open_orders:
@@ -296,17 +405,25 @@ class HyperliquidAdapter(ExchangeAdapter):
             meta = self.info.meta()
             universe = meta.get("universe", [])
 
-            # Find asset info
             for asset_info in universe:
                 if asset_info.get("name") == asset:
+                    sz_dec = int(asset_info.get("szDecimals", 0))
+                    px_dec = max(0, self.PERP_PX_MAX_DECIMALS - sz_dec)
+                    size_step = 10 ** (-sz_dec) if sz_dec > 0 else 1.0
+                    try:
+                        mark = await self.get_market_price(asset)
+                        notional_min_size = self.MIN_NOTIONAL_USD / mark if mark > 0 else size_step
+                    except Exception:
+                        notional_min_size = size_step
                     return MarketInfo(
                         symbol=asset,
                         base_asset=asset,
-                        quote_asset="USD",  # Hyperliquid uses USD
-                        min_order_size=float(asset_info.get("szDecimals", 4)) / 10000,
-                        price_precision=int(asset_info.get("priceDecimals", 2)),
-                        size_precision=int(asset_info.get("szDecimals", 4)),
+                        quote_asset="USD",
+                        min_order_size=max(size_step, notional_min_size),
+                        price_precision=px_dec,
+                        size_precision=sz_dec,
                         is_active=True,
+                        min_notional=self.MIN_NOTIONAL_USD,
                     )
 
             raise ValueError(f"Asset {asset} not found")
@@ -320,7 +437,7 @@ class HyperliquidAdapter(ExchangeAdapter):
             return []
 
         try:
-            open_orders = self.info.open_orders(self.exchange.wallet.address)
+            open_orders = self.info.open_orders(self.account_address)
             orders = []
 
             for order_info in open_orders:
@@ -351,7 +468,7 @@ class HyperliquidAdapter(ExchangeAdapter):
 
         try:
             # Simple health check - get account state
-            self.info.user_state(self.exchange.wallet.address)
+            self.info.user_state(self.account_address)
             return True
         except Exception:
             return False
@@ -366,39 +483,31 @@ class HyperliquidAdapter(ExchangeAdapter):
             from interfaces.strategy import Position
 
             # Get user state which includes positions
-            user_state = self.info.user_state(self.exchange.wallet.address)
+            user_state = self.info.user_state(self.account_address)
             positions = []
 
-            # Parse positions from user state
-            if "assetPositions" in user_state:
-                for pos_info in user_state["assetPositions"]:
-                    if float(pos_info.get("position", {}).get("szi", 0)) != 0:
-                        position_size = float(pos_info["position"]["szi"])
-                        entry_price = float(pos_info["position"]["entryPx"] or 0)
+            for pos_info in user_state.get("assetPositions", []):
+                pos = pos_info.get("position", {})
+                position_size = float(pos.get("szi", 0))
+                if position_size == 0:
+                    continue
 
-                        # Get current price for PnL calculation
-                        current_price = await self.get_market_price(
-                            pos_info["position"]["coin"]
-                        )
-                        current_value = abs(position_size) * current_price
+                coin = pos.get("coin", "")
+                entry_price = float(pos.get("entryPx") or 0)
+                current_price = await self.get_market_price(coin)
+                current_value = abs(position_size) * current_price
+                unrealized_pnl = float(pos.get("unrealizedPnl", 0))
 
-                        # Calculate unrealized PnL
-                        if entry_price > 0:
-                            unrealized_pnl = position_size * (
-                                current_price - entry_price
-                            )
-                        else:
-                            unrealized_pnl = 0.0
-
-                        position = Position(
-                            asset=pos_info["position"]["coin"],
-                            size=position_size,
-                            entry_price=entry_price,
-                            current_value=current_value,
-                            unrealized_pnl=unrealized_pnl,
-                            timestamp=time.time(),
-                        )
-                        positions.append(position)
+                positions.append(
+                    Position(
+                        asset=coin,
+                        size=position_size,
+                        entry_price=entry_price,
+                        current_value=current_value,
+                        unrealized_pnl=unrealized_pnl,
+                        timestamp=time.time(),
+                    )
+                )
 
             return positions
 
@@ -425,28 +534,14 @@ class HyperliquidAdapter(ExchangeAdapter):
                 print(f"❌ No position found for {asset}")
                 return False
 
-            # Determine close size
             if size is None:
                 close_size = abs(target_position.size)
             else:
                 close_size = min(size, abs(target_position.size))
 
-            # Determine side (opposite of current position)
-            close_side = (
-                "A" if target_position.size > 0 else "B"
-            )  # A=Ask (sell), B=Bid (buy)
+            close_size = self._round_size(asset, close_size)
 
-            # Place market order to close position
-            order_request = {
-                "coin": asset,
-                "is_buy": close_side == "B",
-                "sz": close_size,
-                "limit_px": None,  # Market order
-                "order_type": {"limit": {"tif": "Ioc"}},  # Immediate or Cancel
-                "reduce_only": True,
-            }
-
-            result = self.exchange.order(order_request)
+            result = self.exchange.market_close(coin=asset, sz=close_size)
 
             if result and result.get("status") == "ok":
                 print(f"✅ Position close order placed: {close_size} {asset}")
@@ -472,25 +567,22 @@ class HyperliquidAdapter(ExchangeAdapter):
 
         try:
             # Get user state
-            user_state = self.info.user_state(self.exchange.wallet.address)
+            user_state = self.info.user_state(self.account_address)
 
-            # Calculate account metrics
             total_value = 0.0
-            unrealized_pnl = 0.0
-
-            # Get cross margin summary for total account value
+            margin_used = 0.0
             if "crossMarginSummary" in user_state:
                 margin_summary = user_state["crossMarginSummary"]
                 total_value = float(margin_summary.get("accountValue", 0))
-                unrealized_pnl = float(margin_summary.get("totalMarginUsed", 0))
+                margin_used = float(margin_summary.get("totalMarginUsed", 0))
 
-            # Get positions for detailed PnL
+            unrealized_pnl = sum(
+                float(p.get("position", {}).get("unrealizedPnl", 0))
+                for p in user_state.get("assetPositions", [])
+            )
+
             positions = await self.get_positions()
-            position_pnl = sum(pos.unrealized_pnl for pos in positions)
-
-            # Calculate drawdown (simplified - would need historical high water mark)
-            # For now, use unrealized PnL as proxy
-            total_pnl = position_pnl
+            total_pnl = unrealized_pnl
 
             # Estimate drawdown percentage (this would be more sophisticated in production)
             if total_value > 0:

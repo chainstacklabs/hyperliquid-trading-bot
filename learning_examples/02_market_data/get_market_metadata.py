@@ -11,8 +11,16 @@ from hyperliquid.info import Info
 
 load_dotenv()
 
-BASE_URL = os.getenv("HYPERLIQUID_CHAINSTACK_BASE_URL")
+BASE_URL = os.getenv("HYPERLIQUID_CHAINSTACK_BASE_URL") or os.getenv(
+    "HYPERLIQUID_TESTNET_PUBLIC_BASE_URL"
+)
 ASSETS_TO_ANALYZE = ["BTC", "ETH", "SOL"]
+PERP_PX_MAX_DECIMALS = 6
+
+
+def price_tick(sz_decimals: int) -> float:
+    px_decimals = max(0, PERP_PX_MAX_DECIMALS - sz_decimals)
+    return 10**-px_decimals
 
 
 async def method_1_sdk():
@@ -30,9 +38,12 @@ async def method_1_sdk():
         for asset_info in universe:
             asset_name = asset_info.get("name", "")
             if asset_name in ASSETS_TO_ANALYZE:
+                sz = int(asset_info.get("szDecimals", 0))
+                px_decimals = max(0, PERP_PX_MAX_DECIMALS - sz)
                 print(f"\n{asset_name}:")
-                print(f"   Size decimals: {asset_info.get('szDecimals')}")
-                print(f"   Price decimals: {asset_info.get('priceDecimals')}")
+                print(f"   Size decimals: {sz}")
+                print(f"   Price decimals: {px_decimals} (= {PERP_PX_MAX_DECIMALS} - {sz})")
+                print(f"   Price tick: ${price_tick(sz):.{px_decimals}f}")
                 print(f"   Max leverage: {asset_info.get('maxLeverage')}x")
                 print(f"   Only isolated: {asset_info.get('onlyIsolated', False)}")
 
@@ -65,9 +76,12 @@ async def method_2_raw_api():
                 for asset_info in universe:
                     asset_name = asset_info.get("name", "")
                     if asset_name in ASSETS_TO_ANALYZE:
+                        sz = int(asset_info.get("szDecimals", 0))
+                        px_decimals = max(0, PERP_PX_MAX_DECIMALS - sz)
                         print(f"\n{asset_name}:")
-                        print(f"   Size decimals: {asset_info.get('szDecimals')}")
-                        print(f"   Price decimals: {asset_info.get('priceDecimals')}")
+                        print(f"   Size decimals: {sz}")
+                        print(f"   Price decimals: {px_decimals}")
+                        print(f"   Price tick: ${price_tick(sz):.{px_decimals}f}")
                         print(f"   Max leverage: {asset_info.get('maxLeverage')}x")
                         print(
                             f"   Only isolated: {asset_info.get('onlyIsolated', False)}"
@@ -102,15 +116,14 @@ async def calculate_trading_constraints():
 
                 for asset_info in universe[:3]:
                     name = asset_info.get("name", "")
-                    sz_decimals = asset_info.get("szDecimals", 4)
-                    price_decimals = asset_info.get("priceDecimals", 2)
-
-                    min_size = 1 / (10**sz_decimals)
-                    price_tick = 1 / (10**price_decimals)
+                    sz_decimals = int(asset_info.get("szDecimals", 0))
+                    price_decimals = max(0, PERP_PX_MAX_DECIMALS - sz_decimals)
+                    min_size = 10 ** -sz_decimals if sz_decimals > 0 else 1.0
+                    tick = price_tick(sz_decimals)
 
                     print(f"\n{name}:")
                     print(f"   Min order size: {min_size:.{sz_decimals}f} {name}")
-                    print(f"   Price tick size: ${price_tick:.{price_decimals}f}")
+                    print(f"   Price tick size: ${tick:.{price_decimals}f}")
                     print(f"   Max leverage: {asset_info.get('maxLeverage')}x")
 
     except Exception as e:
