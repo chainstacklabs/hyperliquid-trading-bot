@@ -50,7 +50,13 @@ async def cancel_twap_order():
                 "(and optionally TWAP_COIN; defaults to PURR/USDC)."
             )
             return
-        latest_twap_id = int(twap_id_raw)
+        try:
+            latest_twap_id = int(twap_id_raw)
+            if latest_twap_id <= 0:
+                raise ValueError
+        except ValueError:
+            print(f"❌ TWAP_ID must be a positive integer, got: {twap_id_raw!r}")
+            return
         coin = os.getenv("TWAP_COIN", "PURR/USDC")
 
         print(f"🎯 Attempting to cancel TWAP order:")

@@ -76,8 +76,12 @@ async def cancel_multiple_spot_orders():
 
         statuses = result.get("response", {}).get("data", {}).get("statuses", [])
         successful = sum(1 for s in statuses if s == "success")
-        print(f"📋 Cancel Summary: {successful}/{len(statuses)} succeeded")
-        for req, status in zip(cancel_requests, statuses):
+        print(f"📋 Cancel Summary: {successful}/{len(cancel_requests)} requested")
+        if len(statuses) != len(cancel_requests):
+            print(
+                f"⚠️ Expected {len(cancel_requests)} statuses, got {len(statuses)}"
+            )
+        for req, status in zip(cancel_requests, statuses, strict=False):
             mark = "✅" if status == "success" else "❌"
             print(f"   {mark} oid {req['oid']}: {status}")
         print(f"🔍 Monitor these cancellations in your WebSocket stream")

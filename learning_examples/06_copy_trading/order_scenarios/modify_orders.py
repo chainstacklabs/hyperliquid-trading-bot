@@ -90,8 +90,14 @@ async def modify_multiple_spot_orders():
             return
 
         statuses = result.get("response", {}).get("data", {}).get("statuses", [])
-        print(f"📋 Modify Summary: {len(statuses)} statuses received")
-        for req, status in zip(modify_requests, statuses):
+        print(
+            f"📋 Modify Summary: {len(statuses)}/{len(modify_requests)} statuses received"
+        )
+        if len(statuses) != len(modify_requests):
+            print(
+                f"⚠️ Expected {len(modify_requests)} statuses, got {len(statuses)}"
+            )
+        for req, status in zip(modify_requests, statuses, strict=False):
             mark = "✅" if (isinstance(status, dict) and "resting" in status) else "❌"
             print(f"   {mark} oid {req['oid']}: {status}")
         print(f"🔍 Monitor these modifications in your WebSocket stream")
