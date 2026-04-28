@@ -117,11 +117,14 @@ class HyperliquidAdapter(ExchangeAdapter):
             return False
 
     def _load_asset_metadata(self) -> None:
-        meta = self.info.meta()
-        for asset_info in meta.get("universe", []):
-            name = asset_info.get("name")
-            if name is not None:
-                self._perp_sz_decimals[name] = int(asset_info.get("szDecimals", 0))
+        try:
+            meta = self.info.meta()
+            for asset_info in meta.get("universe", []):
+                name = asset_info.get("name")
+                if name is not None:
+                    self._perp_sz_decimals[name] = int(asset_info.get("szDecimals", 0))
+        except Exception as e:
+            print(f"⚠️ Failed to load perp metadata: {e}")
 
         try:
             spot_meta = self.info.spot_meta()
@@ -166,11 +169,16 @@ class HyperliquidAdapter(ExchangeAdapter):
         self.exchange = None
         print("🔌 Disconnected from Hyperliquid")
 
+    PERP_QUOTE_ALIASES = {"USD", "USDC", "USDC_PERP"}
+
     async def get_balance(self, asset: str) -> Balance:
         """Get account balance for an asset.
 
-        For perp accounts ("USD"/"USDC") returns the cross-margin account value
-        as available + total. For spot tokens, reads from spot_user_state.
+        Asset names in PERP_QUOTE_ALIASES (USD / USDC / USDC_PERP) return the
+        cross-margin account value. Any other name reads from spot_user_state.
+        Note: "USDC" is treated as the perp quote here because the bot's grid
+        configs default to that — to read a spot USDC balance, look up the pair
+        directly via spot_meta.
         """
         if not self.is_connected:
             raise RuntimeError("Not connected to exchange")
@@ -178,7 +186,7 @@ class HyperliquidAdapter(ExchangeAdapter):
         try:
             address = self.account_address
 
-            if asset.upper() in ("USD", "USDC_PERP"):
+            if asset.upper() in self.PERP_QUOTE_ALIASES:
                 user_state = self.info.user_state(address)
                 summary = user_state.get("crossMarginSummary", {})
                 account_value = float(summary.get("accountValue", 0))
