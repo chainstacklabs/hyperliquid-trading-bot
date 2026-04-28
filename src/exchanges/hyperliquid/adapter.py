@@ -32,6 +32,7 @@ class HyperliquidAdapter(ExchangeAdapter):
     SPOT_PX_MAX_DECIMALS = 8
     MIN_NOTIONAL_USD = 10.0
     MAX_PRIORITY_FEE_BPS = 8
+    SUPPORTED_GROUPINGS = frozenset({"na", "normalTpsl", "positionTpsl"})
 
     def __init__(
         self,
@@ -327,6 +328,12 @@ class HyperliquidAdapter(ExchangeAdapter):
         if bps is None:
             bps = self.default_priority_fee_bps
 
+        if order.grouping is not None and order.grouping not in self.SUPPORTED_GROUPINGS:
+            raise RuntimeError(
+                f"Unsupported grouping {order.grouping!r}; expected one of "
+                f"{sorted(self.SUPPORTED_GROUPINGS)}"
+            )
+
         if order.grouping and order.grouping != "na":
             if bps:
                 raise RuntimeError(
@@ -451,7 +458,32 @@ class HyperliquidAdapter(ExchangeAdapter):
                     )
                 if order.reduce_only:
                     # market_open doesn't expose reduce_only; route through
-                    # market_close (which is reduce-only by construction).
+                    # market_close (reduce-only by construction). Guard against
+                    # a side that wouldn't actually reduce the position —
+                    # market_close ignores side, so a buggy caller could
+                    # otherwise close the live position even when the request
+                    # was meant to add to it.
+                    resolved_dex = self._infer_dex_from_asset(
+                        order.asset, order_dex
+                    )
+                    current = next(
+                        (
+                            p
+                            for p in await self.get_positions(dex=resolved_dex)
+                            if p.asset == order.asset and p.size != 0
+                        ),
+                        None,
+                    )
+                    if current is None:
+                        raise RuntimeError(
+                            f"reduce_only MARKET on {order.asset}: no open position"
+                        )
+                    expected = OrderSide.SELL if current.size > 0 else OrderSide.BUY
+                    if order.side != expected:
+                        raise RuntimeError(
+                            f"reduce_only MARKET side {order.side.value} does "
+                            f"not reduce a position of size {current.size}"
+                        )
                     result = self.exchange.market_close(
                         coin=order.asset, sz=rounded_size, slippage=0.05
                     )

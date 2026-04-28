@@ -84,11 +84,23 @@ def create_exchange_adapter(exchange_type: str, config: dict):
         expires_after_ttl_ms = _parse_int_env(
             "HYPERLIQUID_EXPIRES_AFTER_TTL_MS", expires_ttl_raw
         )
+        if expires_after_ttl_ms is not None and expires_after_ttl_ms <= 0:
+            raise ValueError(
+                f"HYPERLIQUID_EXPIRES_AFTER_TTL_MS must be > 0, got {expires_after_ttl_ms}"
+            )
         expires_after_ms = (
             None
             if expires_after_ttl_ms is not None
             else _parse_int_env("HYPERLIQUID_EXPIRES_AFTER_MS", expires_abs_raw)
         )
+        if expires_after_ms is not None:
+            import time
+            now_ms = int(time.time() * 1000)
+            if expires_after_ms <= now_ms:
+                raise ValueError(
+                    f"HYPERLIQUID_EXPIRES_AFTER_MS={expires_after_ms} is "
+                    f"already in the past (now={now_ms})"
+                )
         default_priority_fee_bps = _parse_int_env(
             "HYPERLIQUID_PRIORITY_FEE_BPS",
             os.getenv("HYPERLIQUID_PRIORITY_FEE_BPS"),

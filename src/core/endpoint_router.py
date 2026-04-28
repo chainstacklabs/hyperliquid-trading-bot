@@ -215,7 +215,7 @@ class HyperliquidEndpointRouter:
                     EndpointType.WEBSOCKET,
                 ),
                 (
-                    "https://api.hyperliquid-testnet.xyz",
+                    "https://rpc.hyperliquid-testnet.xyz/evm",
                     Provider.PUBLIC,
                     EndpointType.EVM,
                 ),
@@ -237,7 +237,7 @@ class HyperliquidEndpointRouter:
                     Provider.PUBLIC,
                     EndpointType.WEBSOCKET,
                 ),
-                ("https://api.hyperliquid.xyz", Provider.PUBLIC, EndpointType.EVM),
+                ("https://rpc.hyperliquid.xyz/evm", Provider.PUBLIC, EndpointType.EVM),
             ]
 
         for url, provider, endpoint_type in defaults:
