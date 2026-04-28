@@ -30,6 +30,7 @@ class HyperliquidAdapter(ExchangeAdapter):
 
     PERP_PX_MAX_DECIMALS = 6
     SPOT_PX_MAX_DECIMALS = 8
+    MIN_NOTIONAL_USD = 10.0
 
     def __init__(
         self,
@@ -97,6 +98,7 @@ class HyperliquidAdapter(ExchangeAdapter):
             )
 
             self._load_asset_metadata()
+            self._check_agent_approval(wallet.address)
 
             # Test connection against the master account
             self.info.user_state(self.account_address)
@@ -138,6 +140,31 @@ class HyperliquidAdapter(ExchangeAdapter):
                     )
         except Exception:
             pass
+
+    def _check_agent_approval(self, signer_address: str) -> None:
+        """Warn if signer is an agent that isn't approved for the master account.
+
+        When signer == account_address the wallet is acting as its own master and
+        no approval is needed. Otherwise the signer must appear in the master's
+        extraAgents list, else order placements will fail with opaque signing
+        errors at runtime.
+        """
+        if signer_address.lower() == self.account_address.lower():
+            return
+        try:
+            agents = self.info.post(
+                "/info", {"type": "extraAgents", "user": self.account_address}
+            )
+            approved = {a.get("address", "").lower() for a in agents or []}
+            if signer_address.lower() not in approved:
+                print(
+                    f"⚠️ Agent {signer_address} is not approved on master "
+                    f"{self.account_address}. Orders will be rejected. "
+                    f"Approve via https://app.hyperliquid"
+                    f"{'-testnet' if self.testnet else ''}.xyz/API"
+                )
+        except Exception as e:
+            print(f"⚠️ Could not verify agent approval: {e}")
 
     def _is_spot(self, asset: str) -> bool:
         return "/" in asset or asset.startswith("@")
@@ -369,14 +396,21 @@ class HyperliquidAdapter(ExchangeAdapter):
                 if asset_info.get("name") == asset:
                     sz_dec = int(asset_info.get("szDecimals", 0))
                     px_dec = max(0, self.PERP_PX_MAX_DECIMALS - sz_dec)
+                    size_step = 10 ** (-sz_dec) if sz_dec > 0 else 1.0
+                    try:
+                        mark = await self.get_market_price(asset)
+                        notional_min_size = self.MIN_NOTIONAL_USD / mark if mark > 0 else size_step
+                    except Exception:
+                        notional_min_size = size_step
                     return MarketInfo(
                         symbol=asset,
                         base_asset=asset,
                         quote_asset="USD",
-                        min_order_size=10 ** (-sz_dec) if sz_dec > 0 else 1.0,
+                        min_order_size=max(size_step, notional_min_size),
                         price_precision=px_dec,
                         size_precision=sz_dec,
                         is_active=True,
+                        min_notional=self.MIN_NOTIONAL_USD,
                     )
 
             raise ValueError(f"Asset {asset} not found")
