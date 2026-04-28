@@ -211,6 +211,10 @@ class TradingEngine:
     async def stop(self) -> None:
         """Stop the trading engine gracefully"""
 
+        if getattr(self, "_stopped", False):
+            return
+        self._stopped = True
+
         self.running = False
         self.logger.info("🛑 Stopping trading engine")
 
