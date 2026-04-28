@@ -354,6 +354,96 @@ class HyperliquidAdapter(ExchangeAdapter):
 
         return "na"
 
+    TPSL_LIMIT_SLIPPAGE = 0.05  # 5%, mirrors market_close default.
+
+    async def register_position_tpsl(
+        self,
+        asset: str,
+        position_size: float,
+        tp_price: Optional[float] = None,
+        sl_price: Optional[float] = None,
+        dex: Optional[str] = None,
+        slippage: float = TPSL_LIMIT_SLIPPAGE,
+    ) -> bool:
+        """Register paired TP/SL trigger orders against a live position.
+
+        Uses SDK 0.21+ `bulk_orders(grouping="positionTpsl")` so the matching
+        engine fires either order without a polling race. `position_size` is
+        signed (long > 0, short < 0); the trigger orders are sized to fully
+        close that position. Pass `tp_price` / `sl_price` in absolute terms;
+        pass `None` to skip a leg.
+
+        `slippage` biases the order's `limit_px` away from `triggerPx` by that
+        fraction so a single-tick gap past the trigger doesn't leave the
+        market order resting. The reducing side determines direction:
+        sells (long-TP, long-SL) get a *lower* cap; buys (short-TP, short-SL)
+        get a *higher* cap. Default 5% mirrors `market_close`.
+
+        Returns True on placement success.
+        """
+        if not self.is_connected:
+            raise RuntimeError("Not connected to exchange")
+        if position_size == 0:
+            raise RuntimeError("position_size must be non-zero")
+        if tp_price is None and sl_price is None:
+            raise RuntimeError("at least one of tp_price/sl_price must be set")
+
+        is_long = position_size > 0
+        size = abs(position_size)
+        rounded_sz = self._round_size(asset, size, dex=dex)
+
+        # Reducing side is the opposite of position direction.
+        reducing_is_buy = not is_long
+
+        requests = []
+        if tp_price is not None:
+            requests.append(
+                self._build_trigger_request(
+                    asset, reducing_is_buy, rounded_sz, tp_price, "tp", slippage, dex
+                )
+            )
+        if sl_price is not None:
+            requests.append(
+                self._build_trigger_request(
+                    asset, reducing_is_buy, rounded_sz, sl_price, "sl", slippage, dex
+                )
+            )
+
+        result = self.exchange.bulk_orders(requests, grouping="positionTpsl")
+        if not (result and result.get("status") == "ok"):
+            raise RuntimeError(f"register_position_tpsl failed: {result}")
+        return True
+
+    def _build_trigger_request(
+        self,
+        asset: str,
+        is_buy: bool,
+        sz: float,
+        trigger_price: float,
+        tpsl: str,
+        slippage: float,
+        dex: Optional[str],
+    ) -> Dict[str, Any]:
+        """Build a single reduce-only trigger order request for bulk_orders."""
+        from hyperliquid.utils.signing import OrderType as HLOrderType
+
+        trigger_px = self._round_price(asset, trigger_price, dex=dex)
+        # The limit cap is offset away from the trigger so the IOC market can
+        # fill across a tick of slippage. A reducing buy needs a higher cap;
+        # a reducing sell needs a lower cap.
+        bias = (1 + slippage) if is_buy else (1 - slippage)
+        limit_px = self._round_price(asset, trigger_price * bias, dex=dex)
+        return {
+            "coin": asset,
+            "is_buy": is_buy,
+            "sz": sz,
+            "limit_px": limit_px,
+            "order_type": HLOrderType(
+                {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": tpsl}}
+            ),
+            "reduce_only": True,
+        }
+
     async def disconnect(self) -> None:
         """Disconnect from Hyperliquid"""
         self.is_connected = False

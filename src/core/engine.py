@@ -7,7 +7,7 @@ Clean, focused responsibility - no confusing naming like "enhanced" or "advanced
 
 import asyncio
 import time
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import logging
 
 from interfaces.strategy import (
@@ -55,6 +55,24 @@ class TradingEngine:
         # State tracking
         self.current_positions: List[Position] = []
         self.pending_orders: Dict[str, Order] = {}
+        # exchange_order_id -> (originating signal, created_at). Used to
+        # correlate userFills back to the strategy. Periodically swept so
+        # never-filled cancelled orders don't leak.
+        self._signals_by_oid: Dict[str, Tuple[TradingSignal, float]] = {}
+        # asset -> {"oids": [...], "dex": str}. Tracks the trigger pair we
+        # registered and the dex it lives on. Used to (a) cancel-and-rearm on
+        # partial-fill, and (b) detect external cancellation so we can re-arm.
+        # Storing the dex avoids paying the cost of an all-dexes scan during
+        # orphan recovery (209+ HIP-3 dexes on testnet).
+        self._tpsl_oids: Dict[str, Dict[str, Any]] = {}
+        # asset -> wallclock of the most recent processed fill on that coin.
+        # Recovery skips coins with a fill in the last RECOVERY_FILL_DEBOUNCE_S
+        # seconds to avoid racing the userFills Close callback when a
+        # trigger fires (open_orders drops the trigger before the WS
+        # delivers the Close fill that clears _tpsl_oids).
+        self._last_fill_ts: Dict[str, float] = {}
+        self._signals_oid_ttl_sec = 24 * 3600
+        self.RECOVERY_FILL_DEBOUNCE_S = 10
         self.executed_trades = 0
         self.total_pnl = 0.0
 
@@ -178,6 +196,14 @@ class TradingEngine:
         # Subscribe to market data for strategy asset
         asset = self.config.get("strategy", {}).get("symbol", "BTC")
         await self.market_data.subscribe_price_updates(asset, self._handle_price_update)
+
+        # Subscribe to real fill events; on_trade_executed now fires when the
+        # matching engine actually fills, not when an oid comes back from
+        # place_order. Required for any strategy that compounds on fills.
+        await self.market_data.subscribe_channel(
+            {"type": "userFills", "user": self.exchange.account_address},
+            self._handle_user_fill,
+        )
 
         # Main trading loop
         await self._trading_loop()
@@ -377,6 +403,7 @@ class TradingEngine:
             order_type=OrderType.LIMIT if signal.price else OrderType.MARKET,
             price=signal.price,
             created_at=current_time,
+            dex=signal.dex,
         )
 
         # Place order with exchange
@@ -391,12 +418,144 @@ class TradingEngine:
             f"📝 Placed {order.side.value} order: {order.size} {order.asset} @ ${order.price}"
         )
 
-        # Notify strategy
-        if self.strategy:
-            # Simulate immediate execution for now (real implementation would track fills)
-            executed_price = order.price or 0.0
-            self.strategy.on_trade_executed(signal, executed_price, order.size)
-            self.executed_trades += 1
+        # Track signal so the userFills callback can correlate the real fill.
+        self._signals_by_oid[exchange_order_id] = (signal, current_time)
+
+    async def _handle_user_fill(self, payload: Dict[str, Any]) -> None:
+        """Handle a userFills WS event.
+
+        The userFills subscription delivers a snapshot of historical fills on
+        connect (isSnapshot=True) followed by live update messages. We skip
+        the snapshot to avoid re-acting to fills that landed before the
+        engine started (false TPSL arms, double on_trade_executed calls).
+
+        Each fill carries: coin, oid, side, sz, px, dir ("Open Long"/
+        "Close Long"/"Open Short"/"Close Short"), startPosition, hash, time,
+        fee. We notify the strategy and, on opening fills with grouped
+        tpsl_mode, arm a paired TP/SL via the adapter.
+        """
+        if not self.running or not self.strategy or not self.exchange:
+            return
+
+        if payload.get("isSnapshot"):
+            return
+
+        fills = payload.get("fills") or []
+        for fill in fills:
+            try:
+                # Fill events deliver oid as int; the adapter returns it as
+                # str — normalize both sides on the str form.
+                oid = str(fill.get("oid", ""))
+                tracked = self._signals_by_oid.pop(oid, None)
+                px = float(fill.get("px", 0))
+                sz = float(fill.get("sz", 0))
+
+                if tracked is not None:
+                    signal, _placed_at = tracked
+                    self.strategy.on_trade_executed(signal, px, sz)
+                    self.executed_trades += 1
+                    self.logger.info(
+                        f"💱 Filled {fill.get('coin')} {fill.get('side')} "
+                        f"sz={sz} @ ${px} oid={oid}"
+                    )
+
+                coin = fill.get("coin")
+                if coin:
+                    self._last_fill_ts[coin] = time.time()
+                direction = fill.get("dir") or ""
+                if "Open" in direction:
+                    await self._maybe_arm_grouped_tpsl(fill)
+                elif "Close" in direction:
+                    self._tpsl_oids.pop(coin, None)
+            except Exception as e:
+                self.logger.error(
+                    f"❌ Error handling fill {fill}: {e}"
+                )
+
+    @staticmethod
+    def _tpsl_prices(
+        entry: float,
+        is_long: bool,
+        tp_pct: Optional[float],
+        sl_pct: Optional[float],
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Compute absolute TP/SL prices from entry and percentage offsets.
+
+        For a long: TP is above entry, SL is below. For a short: inverted.
+        """
+        if tp_pct is not None:
+            tp = entry * (1 + tp_pct / 100) if is_long else entry * (1 - tp_pct / 100)
+        else:
+            tp = None
+        if sl_pct is not None:
+            sl = entry * (1 - sl_pct / 100) if is_long else entry * (1 + sl_pct / 100)
+        else:
+            sl = None
+        return tp, sl
+
+    async def _maybe_arm_grouped_tpsl(self, fill: Dict[str, Any]) -> None:
+        """Place paired TP/SL trigger orders for the live position.
+
+        Re-arms on every "Open" fill against the *current* position size so
+        partial fills don't leave added size unprotected. Cancels the prior
+        trigger pair before placing the new one. No-op when the asset isn't
+        actually open or grouped tpsl_mode isn't enabled.
+        """
+        risk_cfg = self.config.get("risk_management", {})
+        if risk_cfg.get("tpsl_mode", "polling") != "grouped":
+            return
+
+        coin = fill.get("coin")
+        if not coin:
+            return
+
+        positions = await self.exchange.get_positions()
+        position = next((p for p in positions if p.asset == coin), None)
+        if position is None or position.size == 0:
+            return
+
+        sl_pct = risk_cfg.get("stop_loss_pct") if risk_cfg.get("stop_loss_enabled") else None
+        tp_pct = risk_cfg.get("take_profit_pct") if risk_cfg.get("take_profit_enabled") else None
+        if sl_pct is None and tp_pct is None:
+            return
+
+        # Cancel any prior trigger pair so size and prices reflect the new
+        # entry / position size after this partial.
+        prior = self._tpsl_oids.pop(coin, None)
+        if prior:
+            for prior_oid in prior.get("oids", []):
+                try:
+                    await self.exchange.cancel_order(
+                        prior_oid, dex=prior.get("dex")
+                    )
+                except Exception as e:
+                    self.logger.debug(f"prior TPSL cancel skipped ({prior_oid}): {e}")
+
+        tp_price, sl_price = self._tpsl_prices(
+            position.entry_price, position.size > 0, tp_pct, sl_pct
+        )
+
+        try:
+            await self.exchange.register_position_tpsl(
+                coin, position.size, tp_price=tp_price, sl_price=sl_price
+            )
+            # Re-read open orders to capture the freshly placed trigger oids
+            # so we can cancel-and-rearm or detect external cancellation.
+            open_orders = await self.exchange.get_open_orders(dex=position.dex)
+            self._tpsl_oids[coin] = {
+                "oids": [
+                    o.exchange_order_id
+                    for o in open_orders
+                    if o.asset == coin and o.exchange_order_id
+                ],
+                "dex": position.dex,
+            }
+            self.logger.info(
+                f"🎯 Armed grouped TP/SL on {coin}: "
+                f"tp={tp_price} sl={sl_price} sz={position.size}"
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Failed to arm grouped TP/SL on {coin}: {e}")
 
     async def _close_positions(self, signal: TradingSignal) -> None:
         """Close positions (e.g., cancel all orders for rebalancing)"""
@@ -415,6 +574,8 @@ class TradingEngine:
 
                 # Update order statuses (simplified)
                 await self._update_order_statuses()
+                self._sweep_signals_by_oid()
+                await self._recover_orphaned_tpsl()
 
                 # Log status
                 if self.executed_trades > 0:
@@ -423,6 +584,73 @@ class TradingEngine:
             except Exception as e:
                 self.logger.error(f"❌ Error in trading loop: {e}")
                 await asyncio.sleep(60)
+
+    def _sweep_signals_by_oid(self) -> None:
+        """Drop tracked signals older than the TTL.
+
+        Orders that get cancelled out-of-band (or never fill) never trigger
+        the userFills cleanup; without this sweep, the dict grows unbounded.
+        """
+        cutoff = time.time() - self._signals_oid_ttl_sec
+        stale = [oid for oid, (_, t) in self._signals_by_oid.items() if t < cutoff]
+        for oid in stale:
+            self._signals_by_oid.pop(oid, None)
+
+    async def _recover_orphaned_tpsl(self) -> None:
+        """Re-arm grouped TPSL when the registered trigger orders are gone.
+
+        If a user cancels the trigger pair via the UI while the position is
+        open, `_tpsl_oids` keeps stale ids; this loop tick re-arms.
+
+        Two safeguards:
+        - Debounce by recent-fill window: don't recover for a coin that had a
+          fill within RECOVERY_FILL_DEBOUNCE_S seconds. This avoids racing the
+          userFills callback that clears `_tpsl_oids` after a legitimate
+          trigger fire (open_orders drops the trigger before the WS delivers
+          the Close fill).
+        - Aggregate across HIP-3 dexes via `all_dexes=True`. Without it, a
+          position on a builder-deployed dex would always look orphaned and
+          re-arm on every tick.
+        """
+        risk_cfg = self.config.get("risk_management", {})
+        if risk_cfg.get("tpsl_mode", "polling") != "grouped":
+            return
+        if not self._tpsl_oids:
+            return
+
+        now = time.time()
+        # Iterate per-coin and only query the dex we know that coin lives on
+        # (recorded at arming time). Avoids fanning out across 200+ dexes.
+        for coin, entry in list(self._tpsl_oids.items()):
+            last_fill = self._last_fill_ts.get(coin, 0)
+            if now - last_fill < self.RECOVERY_FILL_DEBOUNCE_S:
+                continue
+            dex = entry.get("dex")
+            try:
+                positions = await self.exchange.get_positions(dex=dex)
+                open_orders = await self.exchange.get_open_orders(dex=dex)
+            except Exception as e:
+                self.logger.debug(f"orphan-recovery skipped on {coin}: {e}")
+                continue
+            position = next((p for p in positions if p.asset == coin), None)
+            if position is None or position.size == 0:
+                self._tpsl_oids.pop(coin, None)
+                continue
+            live_oids = {
+                o.exchange_order_id for o in open_orders if o.exchange_order_id
+            }
+            if not any(o in live_oids for o in entry.get("oids", [])):
+                self.logger.warning(
+                    f"⚠️ TPSL pair on {coin} disappeared externally; re-arming"
+                )
+                self._tpsl_oids.pop(coin, None)
+                # Fake an "Open" fill payload to reuse the arming logic.
+                await self._maybe_arm_grouped_tpsl(
+                    {
+                        "coin": coin,
+                        "dir": "Open Long" if position.size > 0 else "Open Short",
+                    }
+                )
 
     async def _update_order_statuses(self) -> None:
         """Update status of pending orders"""

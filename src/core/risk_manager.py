@@ -302,17 +302,21 @@ class RiskManager:
         """Initialize risk rules from configuration"""
 
         risk_config = self.config.get("risk_management", {})
+        # In "grouped" mode, paired TP/SL trigger orders are placed at fill
+        # time (engine.py); the polling rules become redundant and would race.
+        tpsl_mode = risk_config.get("tpsl_mode", "polling")
+        polling_tpsl = tpsl_mode == "polling"
 
-        # Stop loss rule
-        if risk_config.get("stop_loss_enabled", False):
+        # Stop loss rule (polling-only)
+        if polling_tpsl and risk_config.get("stop_loss_enabled", False):
             self.rules.append(
                 StopLossRule(
                     {"enabled": True, "loss_pct": risk_config.get("stop_loss_pct", 5.0)}
                 )
             )
 
-        # Take profit rule
-        if risk_config.get("take_profit_enabled", False):
+        # Take profit rule (polling-only)
+        if polling_tpsl and risk_config.get("take_profit_enabled", False):
             self.rules.append(
                 TakeProfitRule(
                     {

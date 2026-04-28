@@ -55,6 +55,10 @@ class GridConfig:
     # Rebalancing
     rebalance_threshold_pct: float = 15.0  # Rebalance if price moves 15% outside range
 
+    # HIP-3: optional builder-deployed perp dex (None = main perp).
+    # Auto-inferred from "<dex>:<symbol>" prefix when unset.
+    dex: Optional[str] = None
+
 
 class BasicGridStrategy(TradingStrategy):
     """
@@ -72,14 +76,22 @@ class BasicGridStrategy(TradingStrategy):
         super().__init__("basic_grid", config)
 
         # Extract grid config
+        symbol = config.get("symbol", "BTC")
+        # Auto-infer dex from HIP-3 namespaced symbol if not given explicitly.
+        inferred_dex = (
+            symbol.split(":", 1)[0]
+            if ":" in symbol and not symbol.startswith("@")
+            else None
+        )
         self.grid_config = GridConfig(
-            symbol=config.get("symbol", "BTC"),
+            symbol=symbol,
             levels=config.get("levels", 10),
             range_pct=config.get("range_pct", 10.0),
             total_allocation=config.get("total_allocation", 1000.0),
             min_price=config.get("min_price"),
             max_price=config.get("max_price"),
             rebalance_threshold_pct=config.get("rebalance_threshold_pct", 15.0),
+            dex=config.get("dex", inferred_dex),
         )
 
         # Grid state
@@ -148,6 +160,7 @@ class BasicGridStrategy(TradingStrategy):
                             "level_index": level.level_index,
                             "grid_type": "initial",
                         },
+                        dex=self.grid_config.dex,
                     )
                 )
             elif not level.is_buy_level and level.price > current_price:
@@ -163,6 +176,7 @@ class BasicGridStrategy(TradingStrategy):
                             "level_index": level.level_index,
                             "grid_type": "initial",
                         },
+                        dex=self.grid_config.dex,
                     )
                 )
 
@@ -225,6 +239,7 @@ class BasicGridStrategy(TradingStrategy):
                 size=0,  # Close all
                 reason="Rebalancing grid",
                 metadata={"action": "cancel_all"},
+                dex=self.grid_config.dex,
             )
         ]
 

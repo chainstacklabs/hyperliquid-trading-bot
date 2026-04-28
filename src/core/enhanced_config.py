@@ -189,7 +189,17 @@ class RebalanceConfig:
 
 @dataclass
 class RiskManagementConfig:
-    """Risk management settings - ALL ASSUMPTIONS VISIBLE"""
+    """Risk management settings - ALL ASSUMPTIONS VISIBLE.
+
+    `tpsl_mode` controls how stop-loss / take-profit are enforced:
+      "polling" - legacy: engine polls unrealized_pnl on every price tick
+                  and emits a CLOSE signal when thresholds are crossed.
+                  Races the matching engine; can fire after a sharp move.
+      "grouped" - SDK 0.21+ positionTpsl: at fill time the adapter places
+                  a paired TP/SL trigger pair sized to fully close the
+                  position. The matching engine fires whichever leg hits
+                  first; no polling, no race.
+    """
 
     max_drawdown_pct: float = 15.0  # Stop if % drawdown
     max_position_size_pct: float = 30.0  # Never hold more than % in asset
@@ -197,6 +207,7 @@ class RiskManagementConfig:
     stop_loss_pct: float = 5.0  # Stop loss percentage
     take_profit_enabled: bool = False  # Enable take profit
     take_profit_pct: float = 20.0  # Take profit percentage
+    tpsl_mode: str = "polling"  # "polling" or "grouped"
     rebalance: RebalanceConfig = field(default_factory=RebalanceConfig)
 
     def validate(self) -> None:
@@ -209,6 +220,10 @@ class RiskManagementConfig:
             raise ValueError("stop_loss_pct must be between 1.0 and 20.0")
         if self.take_profit_enabled and not 5.0 <= self.take_profit_pct <= 100.0:
             raise ValueError("take_profit_pct must be between 5.0 and 100.0")
+        if self.tpsl_mode not in ("polling", "grouped"):
+            raise ValueError(
+                f"tpsl_mode must be 'polling' or 'grouped', got {self.tpsl_mode!r}"
+            )
         self.rebalance.validate()
 
 
