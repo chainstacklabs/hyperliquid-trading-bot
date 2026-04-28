@@ -38,6 +38,8 @@ class HyperliquidAdapter(ExchangeAdapter):
         testnet: bool = True,
         account_address: Optional[str] = None,
         dex: Optional[str] = None,
+        expires_after_ms: Optional[int] = None,
+        default_priority_fee_bps: Optional[int] = None,
     ):
         super().__init__("Hyperliquid")
         self.private_key = private_key
@@ -52,6 +54,14 @@ class HyperliquidAdapter(ExchangeAdapter):
         # HIP-3 builder-deployed perp dex name; None = main perp dex (default).
         # Per-call dex overrides are also accepted on get_balance/positions etc.
         self.dex = dex
+
+        # SDK 0.12.0+ expires_after for signed L1 actions. Set per-Exchange at
+        # connect; can be None to disable.
+        self.expires_after_ms = expires_after_ms
+
+        # SDK 0.23.0+ default priority fee in bps applied to orders that don't
+        # set their own. None = no priority fee.
+        self.default_priority_fee_bps = default_priority_fee_bps
 
         # Hyperliquid SDK components (will be initialized on connect)
         self.info = None
@@ -106,6 +116,9 @@ class HyperliquidAdapter(ExchangeAdapter):
 
             self._load_asset_metadata()
             self._check_agent_approval(wallet.address)
+
+            if self.expires_after_ms is not None:
+                self.exchange.set_expires_after(self.expires_after_ms)
 
             # Test connection against the master account
             self.info.user_state(self.account_address)
@@ -275,6 +288,34 @@ class HyperliquidAdapter(ExchangeAdapter):
         """Return known perp dex names ('' = main perp dex)."""
         return list(self._known_dexes)
 
+    def _resolve_grouping(self, order: Order):
+        """Resolve order grouping for SDK bulk_orders.
+
+        Returns one of "na", "normalTpsl", "positionTpsl", or a
+        PriorityGrouping dict {"p": bps} when a priority fee is requested.
+        Order-level priority_fee_bps takes precedence over the adapter's
+        default. Order grouping and priority fee are mutually exclusive.
+        """
+        bps = order.priority_fee_bps
+        if bps is None:
+            bps = self.default_priority_fee_bps
+
+        if order.grouping and order.grouping != "na":
+            if bps:
+                raise RuntimeError(
+                    "Order.grouping and priority_fee_bps cannot be combined"
+                )
+            return order.grouping
+
+        if bps:
+            if not 0 <= bps <= 8:
+                raise RuntimeError(
+                    f"priority_fee_bps={bps} out of range (server cap is 8 bps)"
+                )
+            return {"p": int(bps)}
+
+        return "na"
+
     async def disconnect(self) -> None:
         """Disconnect from Hyperliquid"""
         self.is_connected = False
@@ -367,32 +408,53 @@ class HyperliquidAdapter(ExchangeAdapter):
             order_dex = order.dex
             rounded_size = self._round_size(order.asset, order.size, dex=order_dex)
 
+            # Resolve grouping for SDK bulk_orders (SDK 0.21+).
+            grouping_arg = self._resolve_grouping(order)
+
             if order.order_type == OrderType.MARKET:
-                market_price = await self.get_market_price(order.asset, dex=order_dex)
-                slippage = 1.01 if is_buy else 0.99
-                adjusted_price = self._round_price(
-                    order.asset, market_price * slippage, dex=order_dex
-                )
-                result = self.exchange.order(
+                # SDK market_open handles slippage and the IOC limit derivation;
+                # avoids hand-rolled ±1% IOC. SDK 0.20.1 fixed HIP-3 markets.
+                if grouping_arg != "na":
+                    raise RuntimeError(
+                        "grouping/priority_fee_bps not supported with MARKET orders"
+                    )
+                result = self.exchange.market_open(
                     name=order.asset,
                     is_buy=is_buy,
                     sz=rounded_size,
-                    limit_px=adjusted_price,
-                    order_type=HLOrderType({"limit": {"tif": "Ioc"}}),
-                    reduce_only=False,
+                    slippage=0.05,
                 )
             else:
                 rounded_price = self._round_price(
                     order.asset, order.price, dex=order_dex
                 )
-                result = self.exchange.order(
-                    name=order.asset,
-                    is_buy=is_buy,
-                    sz=rounded_size,
-                    limit_px=rounded_price,
-                    order_type=HLOrderType({"limit": {"tif": "Gtc"}}),
-                    reduce_only=False,
-                )
+                # Priority-fee orders must be IOC (server-enforced).
+                is_priority = isinstance(grouping_arg, dict)
+                tif = "Ioc" if is_priority else "Gtc"
+                limit_order_type: HLOrderType = {"limit": {"tif": tif}}
+                if grouping_arg != "na":
+                    # SDK 0.21+: order grouping (positionTpsl, normalTpsl) and
+                    # 0.23+ priority fees both require bulk_orders.
+                    request = {
+                        "coin": order.asset,
+                        "is_buy": is_buy,
+                        "sz": rounded_size,
+                        "limit_px": rounded_price,
+                        "order_type": limit_order_type,
+                        "reduce_only": order.reduce_only,
+                    }
+                    result = self.exchange.bulk_orders(
+                        [request], grouping=grouping_arg
+                    )
+                else:
+                    result = self.exchange.order(
+                        name=order.asset,
+                        is_buy=is_buy,
+                        sz=rounded_size,
+                        limit_px=rounded_price,
+                        order_type=limit_order_type,
+                        reduce_only=order.reduce_only,
+                    )
 
             if result and result.get("status") == "ok":
                 statuses = (

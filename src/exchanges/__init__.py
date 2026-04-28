@@ -10,6 +10,8 @@ To add a new exchange:
 3. Update configuration to use exchange type
 """
 
+from typing import Optional
+
 from .hyperliquid import HyperliquidAdapter, HyperliquidMarketData
 
 # Exchange registry - makes it easy to add new DEXes
@@ -56,11 +58,31 @@ def create_exchange_adapter(exchange_type: str, config: dict):
         )
         dex = config.get("dex")
 
+        # SDK 0.12+ expires_after; absolute epoch-ms is what the SDK expects,
+        # but it's more ergonomic to specify a TTL. Accept either: TTL_MS sets
+        # a moving deadline at every connect, ABSOLUTE_MS pins one.
+        expires_ttl = os.getenv("HYPERLIQUID_EXPIRES_AFTER_TTL_MS")
+        expires_abs = os.getenv("HYPERLIQUID_EXPIRES_AFTER_MS")
+        expires_after_ms: Optional[int] = None
+        if expires_ttl:
+            import time
+            expires_after_ms = int(time.time() * 1000) + int(expires_ttl)
+        elif expires_abs:
+            expires_after_ms = int(expires_abs)
+
+        priority_env = os.getenv("HYPERLIQUID_PRIORITY_FEE_BPS")
+        default_priority_fee_bps = int(priority_env) if priority_env else None
+
         if not private_key:
             raise ValueError("private_key is required for Hyperliquid")
 
         return exchange_class(
-            private_key, testnet, account_address=account_address, dex=dex
+            private_key,
+            testnet,
+            account_address=account_address,
+            dex=dex,
+            expires_after_ms=expires_after_ms,
+            default_priority_fee_bps=default_priority_fee_bps,
         )
 
     # Future exchanges will have their own initialization logic here

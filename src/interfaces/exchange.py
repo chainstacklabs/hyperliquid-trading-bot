@@ -56,6 +56,14 @@ class Order:
     exchange_order_id: Optional[str] = None
     created_at: float = 0.0  # Timestamp when order was created
     dex: Optional[str] = None
+    # SDK 0.21.0: order grouping for OCO / TPSL pairs. None == "na".
+    # Valid: "normalTpsl" (linked TP/SL), "positionTpsl" (position-bound TP/SL).
+    grouping: Optional[str] = None
+    # SDK 0.23.0: priority fee in bps (0-8 currently, capped server-side).
+    # Routes through bulk_orders with PriorityGrouping when set.
+    priority_fee_bps: Optional[int] = None
+    # SDK 0.21.0 reduce-only flag, for closing a position with a fresh order.
+    reduce_only: bool = False
 
 
 @dataclass
