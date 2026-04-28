@@ -47,18 +47,14 @@ def create_exchange_adapter(exchange_type: str, config: dict):
 
     # Extract common parameters for exchange initialization
     if exchange_type in ["hyperliquid", "hl"]:
-        import os
-
+        # Hyperliquid-specific initialization
         private_key = config.get("private_key")
         testnet = config.get("testnet", True)
-        account_address = config.get("account_address") or os.getenv(
-            "TESTNET_WALLET_ADDRESS" if testnet else "MAINNET_WALLET_ADDRESS"
-        )
 
         if not private_key:
             raise ValueError("private_key is required for Hyperliquid")
 
-        return exchange_class(private_key, testnet, account_address=account_address)
+        return exchange_class(private_key, testnet)
 
     # Future exchanges will have their own initialization logic here
     # elif exchange_type == "binance":
