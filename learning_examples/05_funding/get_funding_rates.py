@@ -63,7 +63,7 @@ async def get_funding_rates_sdk() -> Optional[List[Dict]]:
                             "annual_rate_pct": funding_rate * 100 * 365 * 24,
                             "mark_price": mark_price,
                         })
-            except Exception as e:
+            except (httpx.HTTPError, ValueError, KeyError) as e:
                 print(f"  skip dex={dex_name!r}: {e}")
 
         funding_opportunities.sort(key=lambda x: x["funding_rate"], reverse=True)
@@ -79,56 +79,75 @@ async def get_funding_rates_sdk() -> Optional[List[Dict]]:
 
 
 async def get_funding_rates_raw() -> Optional[List[Dict]]:
-    """Method 2: Raw HTTP API call"""
-    print("\nMethod 2: Raw HTTP API")
+    """Method 2: Raw HTTP API across the requested dexes (HIP-3)."""
+    print("\nMethod 2: Raw HTTP API (multi-dex)")
     print("-" * 30)
 
+    if DEXES_ENV == "all":
+        # Need a discovery call first; reuse the SDK helper.
+        from hyperliquid.info import Info as _Info
+
+        info = _Info(BASE_URL, skip_ws=True)
+        dexes = info.perp_dexs() or []
+        dex_names = [""] + [
+            d.get("name") for d in dexes if isinstance(d, dict) and d.get("name")
+        ]
+    elif DEXES_ENV:
+        dex_names = [d.strip() for d in DEXES_ENV.split(",")]
+    else:
+        dex_names = [""]
+
+    funding_opportunities: List[Dict] = []
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{BASE_URL}/info",
-                json={"type": "metaAndAssetCtxs"},
-                headers={"Content-Type": "application/json"},
-            )
+            for dex_name in dex_names:
+                payload = {"type": "metaAndAssetCtxs"}
+                if dex_name:
+                    payload["dex"] = dex_name
+                try:
+                    response = await client.post(
+                        f"{BASE_URL}/info",
+                        json=payload,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    if response.status_code != 200:
+                        print(f"  skip dex={dex_name!r}: HTTP {response.status_code}")
+                        continue
+                    data = response.json()
+                except (httpx.HTTPError, ValueError) as e:
+                    print(f"  skip dex={dex_name!r}: {e}")
+                    continue
 
-            if response.status_code == 200:
-                data = response.json()
-                funding_opportunities = []
-                
-                if len(data) >= 2:
-                    meta = data[0]
-                    asset_ctxs = data[1]
-                    
-                    # Map asset names from universe to contexts by index
-                    for i, asset_ctx in enumerate(asset_ctxs):
-                        asset_name = meta["universe"][i]["name"] if i < len(meta["universe"]) else f"UNKNOWN_{i}"
-                        funding_rate = float(asset_ctx.get("funding", "0"))
-                        mark_price = float(asset_ctx.get("markPx", "0"))
-                        
-                        if funding_rate > MIN_FUNDING_RATE:
-                            funding_opportunities.append({
-                                "asset": asset_name,
-                                "funding_rate": funding_rate,
-                                "funding_rate_pct": funding_rate * 100,
-                                "annual_rate_pct": funding_rate * 100 * 365 * 24,
-                                "mark_price": mark_price
-                            })
-                    
-                    funding_opportunities.sort(key=lambda x: x["funding_rate"], reverse=True)
-                    
-                    print(f"Found {len(funding_opportunities)} positive funding opportunities")
-                    print()
-                    
-                    for i, opp in enumerate(funding_opportunities[:10], 1):
-                        print(f"{i:2d}. {opp['asset']:>6}: {opp['funding_rate_pct']:+7.4f}% "
-                              f"(Annual: {opp['annual_rate_pct']:+7.1f}%) @ ${opp['mark_price']:,.2f}")
-                    
-                    return funding_opportunities
-            else:
-                print(f"HTTP failed: {response.status_code}")
-                return None
+                if not (isinstance(data, list) and len(data) >= 2):
+                    continue
+                meta, asset_ctxs = data[0], data[1]
+                universe = meta.get("universe", [])
+                for i, asset_ctx in enumerate(asset_ctxs):
+                    asset_name = (
+                        universe[i]["name"]
+                        if i < len(universe)
+                        else f"UNKNOWN_{i}"
+                    )
+                    funding_rate = float(asset_ctx.get("funding", "0"))
+                    mark_price = float(asset_ctx.get("markPx", "0"))
+                    if funding_rate > MIN_FUNDING_RATE:
+                        funding_opportunities.append({
+                            "asset": asset_name,
+                            "dex": dex_name or "main",
+                            "funding_rate": funding_rate,
+                            "funding_rate_pct": funding_rate * 100,
+                            "annual_rate_pct": funding_rate * 100 * 365 * 24,
+                            "mark_price": mark_price,
+                        })
 
-    except Exception as e:
+            funding_opportunities.sort(key=lambda x: x["funding_rate"], reverse=True)
+            print(f"Found {len(funding_opportunities)} positive funding opportunities across {len(dex_names)} dex(es)")
+            for i, opp in enumerate(funding_opportunities[:10], 1):
+                print(f"{i:2d}. [{opp['dex']:>6}] {opp['asset']:>14}: {opp['funding_rate_pct']:+7.4f}% "
+                      f"(Annual: {opp['annual_rate_pct']:+7.1f}%) @ ${opp['mark_price']:,.4f}")
+            return funding_opportunities
+
+    except (httpx.HTTPError, ValueError) as e:
         print(f"HTTP method failed: {e}")
         return None
 

@@ -594,6 +594,8 @@ class HyperliquidAdapter(ExchangeAdapter):
             positions: List[Position] = []
             for d in dex_list:
                 user_state = self.info.user_state(self.account_address, dex=d)
+                # Fetch mids once per dex and reuse for current_value calc.
+                mids = self.info.all_mids(dex=d) if user_state.get("assetPositions") else {}
                 for pos_info in user_state.get("assetPositions", []):
                     pos = pos_info.get("position", {})
                     position_size = float(pos.get("szi", 0))
@@ -602,7 +604,7 @@ class HyperliquidAdapter(ExchangeAdapter):
 
                     coin = pos.get("coin", "")
                     entry_price = float(pos.get("entryPx") or 0)
-                    current_price = await self.get_market_price(coin, dex=d)
+                    current_price = float(mids.get(coin, 0))
                     current_value = abs(position_size) * current_price
                     unrealized_pnl = float(pos.get("unrealizedPnl", 0))
 

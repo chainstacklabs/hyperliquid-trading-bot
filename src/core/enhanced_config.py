@@ -158,8 +158,12 @@ class GridConfig:
             raise ValueError("symbol cannot be empty")
         if not 3 <= self.levels <= 50:
             raise ValueError("levels must be between 3 and 50")
-        if self.dex is not None and not self.dex.strip():
-            raise ValueError("dex must be None or a non-empty string")
+        if self.dex is not None:
+            if not isinstance(self.dex, str):
+                raise ValueError("dex must be a string or None")
+            self.dex = self.dex.strip()
+            if not self.dex:
+                raise ValueError("dex must be None or a non-empty string")
         self.price_range.validate()
         self.position_sizing.validate()
 
@@ -241,8 +245,12 @@ class ExchangeConfig:
         """Validate exchange configuration"""
         if not self.type:
             raise ValueError("exchange type cannot be empty")
-        if self.dex is not None and not self.dex.strip():
-            raise ValueError("dex must be None or a non-empty string")
+        if self.dex is not None:
+            if not isinstance(self.dex, str):
+                raise ValueError("dex must be a string or None")
+            self.dex = self.dex.strip()
+            if not self.dex:
+                raise ValueError("dex must be None or a non-empty string")
 
 
 @dataclass
