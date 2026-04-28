@@ -828,6 +828,8 @@ class HyperliquidAdapter(ExchangeAdapter):
                     current_price = float(mids.get(coin, 0))
                     current_value = abs(position_size) * current_price
                     unrealized_pnl = float(pos.get("unrealizedPnl", 0))
+                    margin_used = float(pos.get("marginUsed", 0))
+                    return_on_equity = float(pos.get("returnOnEquity", 0))
 
                     positions.append(
                         Position(
@@ -838,6 +840,8 @@ class HyperliquidAdapter(ExchangeAdapter):
                             unrealized_pnl=unrealized_pnl,
                             timestamp=time.time(),
                             dex=d or None,
+                            margin_used=margin_used,
+                            return_on_equity=return_on_equity,
                         )
                     )
 

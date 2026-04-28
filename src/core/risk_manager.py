@@ -93,8 +93,42 @@ class RiskRule(ABC):
         return {"name": self.name, "enabled": self.enabled, "config": self.config}
 
 
+def _signed_roe_pct(position: Position) -> Optional[float]:
+    """Return signed margin-relative PnL as a percentage, or None if neither
+    `return_on_equity` nor `margin_used` is populated (spot positions, or
+    pre-2026 API responses missing the field).
+
+    For perps, `return_on_equity` from Hyperliquid is `unrealized_pnl /
+    margin_used` (signed). Multiplying by 100 yields the percentage of the
+    user's *committed margin* gained or lost — what a leveraged trader
+    actually means by "stop me at -5%".
+    """
+    if position.return_on_equity:
+        return position.return_on_equity * 100.0
+    if position.margin_used > 0:
+        return position.unrealized_pnl / position.margin_used * 100.0
+    return None
+
+
+def _notional_pnl_pct(position: Position) -> Optional[float]:
+    """Fallback: notional-relative PnL pct (price-move-equivalent).
+
+    Used when no margin info is available (e.g. spot). Signed.
+    """
+    if position.entry_price <= 0 or position.size == 0:
+        return None
+    notional = position.entry_price * abs(position.size)
+    return position.unrealized_pnl / notional * 100.0
+
+
 class StopLossRule(RiskRule):
-    """Stop loss risk rule - closes positions when loss exceeds threshold"""
+    """Stop loss risk rule - closes positions when loss exceeds threshold.
+
+    Uses margin-relative PnL (returnOnEquity) for perps so a 1% adverse
+    price move on a 10x leveraged position correctly registers as -10%.
+    Falls back to notional-relative PnL when margin info isn't available
+    (spot positions).
+    """
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__("stop_loss", config)
@@ -114,39 +148,47 @@ class StopLossRule(RiskRule):
         events = []
 
         for position in positions:
-            # Calculate current loss percentage
-            if position.entry_price > 0:
-                loss_pct = (
-                    abs(
-                        position.unrealized_pnl
-                        / (position.entry_price * abs(position.size))
-                    )
-                    * 100
-                )
+            signed_pct = _signed_roe_pct(position)
+            basis = "margin"
+            if signed_pct is None:
+                signed_pct = _notional_pnl_pct(position)
+                basis = "notional"
+            if signed_pct is None:
+                continue
 
-                if loss_pct >= self.loss_pct:
-                    events.append(
-                        RiskEvent(
-                            rule_name=self.name,
-                            asset=position.asset,
-                            action=RiskAction.CLOSE_POSITION,
-                            reason=f"Stop loss triggered: {loss_pct:.2f}% loss exceeds {self.loss_pct}%",
-                            severity="HIGH",
-                            metadata={
-                                "position_size": position.size,
-                                "entry_price": position.entry_price,
-                                "current_loss_pct": loss_pct,
-                                "threshold_pct": self.loss_pct,
-                                "unrealized_pnl": position.unrealized_pnl,
-                            },
-                        )
+            if signed_pct <= -self.loss_pct:
+                loss_pct = abs(signed_pct)
+                events.append(
+                    RiskEvent(
+                        rule_name=self.name,
+                        asset=position.asset,
+                        action=RiskAction.CLOSE_POSITION,
+                        reason=(
+                            f"Stop loss triggered: {loss_pct:.2f}% {basis} "
+                            f"loss exceeds {self.loss_pct}%"
+                        ),
+                        severity="HIGH",
+                        metadata={
+                            "position_size": position.size,
+                            "entry_price": position.entry_price,
+                            "current_loss_pct": loss_pct,
+                            "loss_basis": basis,
+                            "threshold_pct": self.loss_pct,
+                            "unrealized_pnl": position.unrealized_pnl,
+                            "margin_used": position.margin_used,
+                        },
                     )
+                )
 
         return events
 
 
 class TakeProfitRule(RiskRule):
-    """Take profit risk rule - closes positions when profit exceeds threshold"""
+    """Take profit risk rule - closes positions when profit exceeds threshold.
+
+    Uses margin-relative PnL (returnOnEquity) for perps; falls back to
+    notional-relative PnL for spot. See StopLossRule for the rationale.
+    """
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__("take_profit", config)
@@ -166,30 +208,36 @@ class TakeProfitRule(RiskRule):
         events = []
 
         for position in positions:
-            # Calculate current profit percentage
-            if position.entry_price > 0 and position.unrealized_pnl > 0:
-                profit_pct = (
-                    position.unrealized_pnl
-                    / (position.entry_price * abs(position.size))
-                ) * 100
+            signed_pct = _signed_roe_pct(position)
+            basis = "margin"
+            if signed_pct is None:
+                signed_pct = _notional_pnl_pct(position)
+                basis = "notional"
+            if signed_pct is None:
+                continue
 
-                if profit_pct >= self.profit_pct:
-                    events.append(
-                        RiskEvent(
-                            rule_name=self.name,
-                            asset=position.asset,
-                            action=RiskAction.CLOSE_POSITION,
-                            reason=f"Take profit triggered: {profit_pct:.2f}% profit exceeds {self.profit_pct}%",
-                            severity="MEDIUM",
-                            metadata={
-                                "position_size": position.size,
-                                "entry_price": position.entry_price,
-                                "current_profit_pct": profit_pct,
-                                "threshold_pct": self.profit_pct,
-                                "unrealized_pnl": position.unrealized_pnl,
-                            },
-                        )
+            if signed_pct >= self.profit_pct:
+                events.append(
+                    RiskEvent(
+                        rule_name=self.name,
+                        asset=position.asset,
+                        action=RiskAction.CLOSE_POSITION,
+                        reason=(
+                            f"Take profit triggered: {signed_pct:.2f}% {basis} "
+                            f"profit exceeds {self.profit_pct}%"
+                        ),
+                        severity="MEDIUM",
+                        metadata={
+                            "position_size": position.size,
+                            "entry_price": position.entry_price,
+                            "current_profit_pct": signed_pct,
+                            "profit_basis": basis,
+                            "threshold_pct": self.profit_pct,
+                            "unrealized_pnl": position.unrealized_pnl,
+                            "margin_used": position.margin_used,
+                        },
                     )
+                )
 
         return events
 
