@@ -6,7 +6,6 @@ This directory contains examples for monitoring and analyzing funding rates on H
 
 - **`get_funding_rates.py`** - Fetch current funding rates for perpetual markets
 - **`check_spot_perp_pairs_availability.py`** - Find assets tradable in both spot and perp markets (for funding arbitrage)
-- **`check_spot_perp_availability.py`** - DEPRECATED: Use `check_spot_perp_pairs_availability.py` instead
 
 ## Why Funding Rates Matter
 

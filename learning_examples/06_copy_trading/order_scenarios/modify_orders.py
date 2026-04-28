@@ -54,51 +54,52 @@ async def modify_multiple_spot_orders():
             print("💡 Only perpetual orders are open")
             return
 
-        print(f"🎯 Found {len(spot_orders)} spot orders to modify:")
-
-        # Modify each order individually
-        successful_modifies = 0
-        failed_modifies = 0
-
+        print(
+            f"🎯 Found {len(spot_orders)} spot orders to modify via bulk_modify_orders_new:"
+        )
+        modify_requests = []
         for order in spot_orders:
-            order_id = order.get("oid")
-            coin_field = order.get("coin")
-            side = "BUY" if order.get("side") == "B" else "SELL"
+            side_is_buy = order.get("side") == "B"
             current_size = float(order.get("sz", 0))
             current_price = float(order.get("limitPx", 0))
-
-            # Calculate new values
-            price_modifier = 0.9 if side == "BUY" else 1.1  # Small price adjustment
-            new_price = round(current_price * price_modifier, 6)
-
+            new_price = round(current_price * (0.9 if side_is_buy else 1.1), 6)
             print(
-                f"   Modifying ID {order_id}: {side} {current_size} -> {current_size} {coin_field} @ ${current_price} -> ${new_price}"
+                f"   - oid {order.get('oid')}: {'BUY' if side_is_buy else 'SELL'} "
+                f"{current_size} {order.get('coin')} @ ${current_price} -> ${new_price}"
+            )
+            modify_requests.append(
+                {
+                    "oid": order.get("oid"),
+                    "order": {
+                        "coin": order.get("coin"),
+                        "is_buy": side_is_buy,
+                        "sz": current_size,
+                        "limit_px": new_price,
+                        "order_type": {"limit": {"tif": "Gtc"}},
+                        "reduce_only": False,
+                    },
+                }
             )
 
-            try:
-                result = exchange.modify_order(
-                    oid=order_id,
-                    name=coin_field,
-                    is_buy=(side == "BUY"),
-                    sz=current_size,
-                    limit_px=new_price,
-                    order_type={"limit": {"tif": "Gtc"}},
-                    reduce_only=False,
-                )
+        # Single bulk_modify_orders_new call: one signed action, atomic on the
+        # WS observer's view. Replaces a per-order loop that drifted from the
+        # docstring's claim.
+        result = exchange.bulk_modify_orders_new(modify_requests)
+        if not (result and result.get("status") == "ok"):
+            print(f"❌ bulk_modify_orders_new failed: {result}")
+            return
 
-                if result and result.get("status") == "ok":
-                    print(f"   ✅ Order {order_id} modified successfully")
-                    successful_modifies += 1
-                else:
-                    print(f"   ❌ Order {order_id} modify failed: {result}")
-                    failed_modifies += 1
-            except Exception as e:
-                print(f"   ❌ Order {order_id} modify error: {e}")
-                failed_modifies += 1
-
-        print(f"📋 Modify Summary:")
-        print(f"   ✅ Successful: {successful_modifies}")
-        print(f"   ❌ Failed: {failed_modifies}")
+        statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+        print(
+            f"📋 Modify Summary: {len(statuses)}/{len(modify_requests)} statuses received"
+        )
+        if len(statuses) != len(modify_requests):
+            print(
+                f"⚠️ Expected {len(modify_requests)} statuses, got {len(statuses)}"
+            )
+        for req, status in zip(modify_requests, statuses, strict=False):
+            mark = "✅" if (isinstance(status, dict) and "resting" in status) else "❌"
+            print(f"   {mark} oid {req['oid']}: {status}")
         print(f"🔍 Monitor these modifications in your WebSocket stream")
 
     except Exception as e:

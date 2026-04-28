@@ -38,11 +38,26 @@ async def cancel_twap_order():
         # Check for active TWAP orders
         print("🔍 Looking for active TWAP orders...")
 
-        # Note: TWAP orders don't appear in regular open_orders() or frontend_open_orders()
-        # In copy trading, you'd get the TWAP ID from WebSocket feed when tracking someone
-        # For this test, we use the TWAP ID from place_twap_order.py output
-        latest_twap_id = 8154  # Replace with actual TWAP ID you want to cancel
-        coin = "PURR/USDC"  # Replace with actual coin symbol
+        # Note: TWAP orders don't appear in regular open_orders() or
+        # frontend_open_orders(). In copy trading you'd get the TWAP id from
+        # the WS feed when tracking a leader. For ad-hoc tests, set TWAP_ID
+        # and TWAP_COIN env vars to whatever place_twap_order.py just
+        # produced (the script prints the id on success).
+        twap_id_raw = os.getenv("TWAP_ID")
+        if not twap_id_raw:
+            print(
+                "❌ Set TWAP_ID env var to the id printed by place_twap_order.py "
+                "(and optionally TWAP_COIN; defaults to PURR/USDC)."
+            )
+            return
+        try:
+            latest_twap_id = int(twap_id_raw)
+            if latest_twap_id <= 0:
+                raise ValueError
+        except ValueError:
+            print(f"❌ TWAP_ID must be a positive integer, got: {twap_id_raw!r}")
+            return
+        coin = os.getenv("TWAP_COIN", "PURR/USDC")
 
         print(f"🎯 Attempting to cancel TWAP order:")
         print(f"   TWAP ID: {latest_twap_id}")

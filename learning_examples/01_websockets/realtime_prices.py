@@ -14,8 +14,14 @@ from hyperliquid.info import Info
 load_dotenv()
 
 WS_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_WS_URL")
-BASE_URL = os.getenv("HYPERLIQUID_TESTNET_CHAINSTACK_BASE_URL")
-ASSETS_TO_TRACK = ["BTC", "ETH", "SOL", "DOGE", "AVAX"]
+BASE_URL = os.getenv("HYPERLIQUID_TESTNET_CHAINSTACK_BASE_URL") or os.getenv(
+    "HYPERLIQUID_TESTNET_PUBLIC_BASE_URL"
+)
+# HIP-3: optional builder-deployed dex name. Empty = main perp.
+DEX = os.getenv("DEX", "")
+# When DEX is set the universe is HIP-3-namespaced (e.g. "felix:CRCL"); show
+# everything from that universe instead of the default majors list.
+ASSETS_TO_TRACK = ["BTC", "ETH", "SOL", "DOGE", "AVAX"] if not DEX else None
 
 # Global state for demo
 prices = {}
@@ -35,13 +41,13 @@ async def load_symbol_mapping():
     global id_to_symbol
 
     info = Info(BASE_URL, skip_ws=True)
-    meta = info.meta()
+    meta = info.meta(dex=DEX)
 
     for i, asset_info in enumerate(meta["universe"]):
         symbol = asset_info["name"]
         id_to_symbol[str(i)] = symbol
 
-    print(f"Loaded {len(id_to_symbol)} asset mappings")
+    print(f"Loaded {len(id_to_symbol)} asset mappings (dex={DEX or 'main'})")
 
 
 async def handle_price_message(data):
@@ -53,13 +59,13 @@ async def handle_price_message(data):
         # Get the mids data from the nested structure
         mids_data = data.get("data", {}).get("mids", {})
 
-        # Update prices and show changes for tracked assets
-        for asset_id_with_at, price_str in mids_data.items():
-            # Remove @ prefix from asset ID
-            asset_id = asset_id_with_at.lstrip("@")
-            symbol = id_to_symbol.get(asset_id)
-
-            if symbol and symbol in ASSETS_TO_TRACK:
+        # The allMids payload returns the asset name directly as the key:
+        # canonical perps come as "BTC"/"ETH"/..., HIP-3 perps as
+        # "<dex>:<symbol>" (e.g. "felix:CRCL"), and spot as "@<index>".
+        # The id_to_symbol map is populated for diagnostics; the actual
+        # match against ASSETS_TO_TRACK is by raw key.
+        for symbol, price_str in mids_data.items():
+            if ASSETS_TO_TRACK is None or symbol in ASSETS_TO_TRACK:
                 try:
                     new_price = float(price_str)
                     old_price = prices.get(symbol)
@@ -102,13 +108,14 @@ async def monitor_prices():
         async with websockets.connect(WS_URL) as websocket:
             print("✅ WebSocket connected!")
 
-            subscribe_message = {
-                "method": "subscribe",
-                "subscription": {"type": "allMids"},
-            }
+            subscription = {"type": "allMids"}
+            if DEX:
+                subscription["dex"] = DEX
+            subscribe_message = {"method": "subscribe", "subscription": subscription}
 
             await websocket.send(json.dumps(subscribe_message))
-            print(f"📊 Monitoring {', '.join(ASSETS_TO_TRACK)}")
+            label = ", ".join(ASSETS_TO_TRACK) if ASSETS_TO_TRACK else f"all {DEX} pairs"
+            print(f"📊 Monitoring {label}")
             print("=" * 40)
 
             running = True

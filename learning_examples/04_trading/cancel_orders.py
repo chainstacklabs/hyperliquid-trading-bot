@@ -16,6 +16,8 @@ load_dotenv()
 
 BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
 WALLET_ADDRESS = os.getenv("TESTNET_WALLET_ADDRESS")
+# HIP-3: optional builder-deployed dex name. Empty = main perp.
+DEX = os.getenv("DEX", "")
 
 
 async def method_cancel_single_order(private_key: str) -> None:
@@ -28,7 +30,7 @@ async def method_cancel_single_order(private_key: str) -> None:
         exchange = Exchange(account, BASE_URL)
         info = Info(BASE_URL, skip_ws=True)
 
-        open_orders = info.open_orders(WALLET_ADDRESS)
+        open_orders = info.open_orders(WALLET_ADDRESS, dex=DEX)
 
         if not open_orders:
             print("No open orders to cancel")
@@ -71,7 +73,7 @@ async def method_cancel_single_order(private_key: str) -> None:
 
                         # Verify cancellation
                         await asyncio.sleep(2)
-                        new_orders = info.open_orders(account.address)
+                        new_orders = info.open_orders(account.address, dex=DEX)
 
                         still_exists = any(o.get("oid") == order_id for o in new_orders)
                         if not still_exists:
