@@ -59,11 +59,20 @@ class TradingEngine:
         # correlate userFills back to the strategy. Periodically swept so
         # never-filled cancelled orders don't leak.
         self._signals_by_oid: Dict[str, Tuple[TradingSignal, float]] = {}
-        # asset -> set of trigger oids registered for that asset's position.
-        # Used to (a) cancel-and-rearm on partial-fill, and (b) detect
-        # external cancellation so we can re-arm.
-        self._tpsl_oids: Dict[str, List[str]] = {}
+        # asset -> {"oids": [...], "dex": str}. Tracks the trigger pair we
+        # registered and the dex it lives on. Used to (a) cancel-and-rearm on
+        # partial-fill, and (b) detect external cancellation so we can re-arm.
+        # Storing the dex avoids paying the cost of an all-dexes scan during
+        # orphan recovery (209+ HIP-3 dexes on testnet).
+        self._tpsl_oids: Dict[str, Dict[str, Any]] = {}
+        # asset -> wallclock of the most recent processed fill on that coin.
+        # Recovery skips coins with a fill in the last RECOVERY_FILL_DEBOUNCE_S
+        # seconds to avoid racing the userFills Close callback when a
+        # trigger fires (open_orders drops the trigger before the WS
+        # delivers the Close fill that clears _tpsl_oids).
+        self._last_fill_ts: Dict[str, float] = {}
         self._signals_oid_ttl_sec = 24 * 3600
+        self.RECOVERY_FILL_DEBOUNCE_S = 10
         self.executed_trades = 0
         self.total_pnl = 0.0
 
@@ -450,11 +459,14 @@ class TradingEngine:
                         f"sz={sz} @ ${px} oid={oid}"
                     )
 
+                coin = fill.get("coin")
+                if coin:
+                    self._last_fill_ts[coin] = time.time()
                 direction = fill.get("dir") or ""
                 if "Open" in direction:
                     await self._maybe_arm_grouped_tpsl(fill)
                 elif "Close" in direction:
-                    self._tpsl_oids.pop(fill.get("coin"), None)
+                    self._tpsl_oids.pop(coin, None)
             except Exception as e:
                 self.logger.error(
                     f"❌ Error handling fill {fill}: {e}"
@@ -509,11 +521,15 @@ class TradingEngine:
 
         # Cancel any prior trigger pair so size and prices reflect the new
         # entry / position size after this partial.
-        for prior_oid in self._tpsl_oids.pop(coin, []):
-            try:
-                await self.exchange.cancel_order(prior_oid)
-            except Exception as e:
-                self.logger.debug(f"prior TPSL cancel skipped ({prior_oid}): {e}")
+        prior = self._tpsl_oids.pop(coin, None)
+        if prior:
+            for prior_oid in prior.get("oids", []):
+                try:
+                    await self.exchange.cancel_order(
+                        prior_oid, dex=prior.get("dex")
+                    )
+                except Exception as e:
+                    self.logger.debug(f"prior TPSL cancel skipped ({prior_oid}): {e}")
 
         tp_price, sl_price = self._tpsl_prices(
             position.entry_price, position.size > 0, tp_pct, sl_pct
@@ -526,11 +542,14 @@ class TradingEngine:
             # Re-read open orders to capture the freshly placed trigger oids
             # so we can cancel-and-rearm or detect external cancellation.
             open_orders = await self.exchange.get_open_orders(dex=position.dex)
-            self._tpsl_oids[coin] = [
-                o.exchange_order_id
-                for o in open_orders
-                if o.asset == coin and o.exchange_order_id
-            ]
+            self._tpsl_oids[coin] = {
+                "oids": [
+                    o.exchange_order_id
+                    for o in open_orders
+                    if o.asset == coin and o.exchange_order_id
+                ],
+                "dex": position.dex,
+            }
             self.logger.info(
                 f"🎯 Armed grouped TP/SL on {coin}: "
                 f"tp={tp_price} sl={sl_price} sz={position.size}"
@@ -580,37 +599,57 @@ class TradingEngine:
     async def _recover_orphaned_tpsl(self) -> None:
         """Re-arm grouped TPSL when the registered trigger orders are gone.
 
-        If the user cancels the trigger pair via the UI while the position is
-        still open, our `_tpsl_oids` map keeps stale ids that no longer exist
-        on the exchange. Detect that and re-arm so the position isn't silently
-        unprotected.
+        If a user cancels the trigger pair via the UI while the position is
+        open, `_tpsl_oids` keeps stale ids; this loop tick re-arms.
+
+        Two safeguards:
+        - Debounce by recent-fill window: don't recover for a coin that had a
+          fill within RECOVERY_FILL_DEBOUNCE_S seconds. This avoids racing the
+          userFills callback that clears `_tpsl_oids` after a legitimate
+          trigger fire (open_orders drops the trigger before the WS delivers
+          the Close fill).
+        - Aggregate across HIP-3 dexes via `all_dexes=True`. Without it, a
+          position on a builder-deployed dex would always look orphaned and
+          re-arm on every tick.
         """
         risk_cfg = self.config.get("risk_management", {})
         if risk_cfg.get("tpsl_mode", "polling") != "grouped":
             return
         if not self._tpsl_oids:
             return
-        try:
-            positions = await self.exchange.get_positions()
-            open_orders = await self.exchange.get_open_orders()
-        except Exception as e:
-            self.logger.debug(f"orphan-recovery skipped: {e}")
-            return
 
-        live_oids = {o.exchange_order_id for o in open_orders if o.exchange_order_id}
-        for coin, oids in list(self._tpsl_oids.items()):
+        now = time.time()
+        # Iterate per-coin and only query the dex we know that coin lives on
+        # (recorded at arming time). Avoids fanning out across 200+ dexes.
+        for coin, entry in list(self._tpsl_oids.items()):
+            last_fill = self._last_fill_ts.get(coin, 0)
+            if now - last_fill < self.RECOVERY_FILL_DEBOUNCE_S:
+                continue
+            dex = entry.get("dex")
+            try:
+                positions = await self.exchange.get_positions(dex=dex)
+                open_orders = await self.exchange.get_open_orders(dex=dex)
+            except Exception as e:
+                self.logger.debug(f"orphan-recovery skipped on {coin}: {e}")
+                continue
             position = next((p for p in positions if p.asset == coin), None)
             if position is None or position.size == 0:
                 self._tpsl_oids.pop(coin, None)
                 continue
-            if not any(o in live_oids for o in oids):
+            live_oids = {
+                o.exchange_order_id for o in open_orders if o.exchange_order_id
+            }
+            if not any(o in live_oids for o in entry.get("oids", [])):
                 self.logger.warning(
                     f"⚠️ TPSL pair on {coin} disappeared externally; re-arming"
                 )
                 self._tpsl_oids.pop(coin, None)
                 # Fake an "Open" fill payload to reuse the arming logic.
                 await self._maybe_arm_grouped_tpsl(
-                    {"coin": coin, "dir": "Open Long" if position.size > 0 else "Open Short"}
+                    {
+                        "coin": coin,
+                        "dir": "Open Long" if position.size > 0 else "Open Short",
+                    }
                 )
 
     async def _update_order_statuses(self) -> None:
