@@ -59,13 +59,13 @@ async def handle_price_message(data):
         # Get the mids data from the nested structure
         mids_data = data.get("data", {}).get("mids", {})
 
-        # Update prices and show changes for tracked assets
-        for asset_id_with_at, price_str in mids_data.items():
-            # Remove @ prefix from asset ID
-            asset_id = asset_id_with_at.lstrip("@")
-            symbol = id_to_symbol.get(asset_id)
-
-            if symbol and (ASSETS_TO_TRACK is None or symbol in ASSETS_TO_TRACK):
+        # The allMids payload returns the asset name directly as the key:
+        # canonical perps come as "BTC"/"ETH"/..., HIP-3 perps as
+        # "<dex>:<symbol>" (e.g. "felix:CRCL"), and spot as "@<index>".
+        # The id_to_symbol map is populated for diagnostics; the actual
+        # match against ASSETS_TO_TRACK is by raw key.
+        for symbol, price_str in mids_data.items():
+            if ASSETS_TO_TRACK is None or symbol in ASSETS_TO_TRACK:
                 try:
                     new_price = float(price_str)
                     old_price = prices.get(symbol)
