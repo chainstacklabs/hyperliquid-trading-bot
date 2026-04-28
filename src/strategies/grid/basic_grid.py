@@ -5,10 +5,15 @@ Simple grid strategy that places buy and sell orders at regular intervals.
 This is the main business logic for grid trading.
 """
 
+import logging
 import time
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
+
+MIN_NOTIONAL_USD = 10.5  # Hyperliquid $10 floor + 5% buffer for size-rounding
+
+logger = logging.getLogger(__name__)
 
 from interfaces.strategy import (
     TradingStrategy,
@@ -190,9 +195,18 @@ class BasicGridStrategy(TradingStrategy):
 
         levels = []
         num_levels = self.grid_config.levels
+        total = self.grid_config.total_allocation
 
-        # Calculate position size per level
-        size_per_level_usd = self.grid_config.total_allocation / num_levels
+        max_levels = max(1, int(total // MIN_NOTIONAL_USD))
+        if num_levels > max_levels:
+            logger.warning(
+                "Grid allocation $%.2f / %d levels = $%.2f per level is below "
+                "$%.2f min notional; reducing to %d levels.",
+                total, num_levels, total / num_levels, MIN_NOTIONAL_USD, max_levels,
+            )
+            num_levels = max_levels
+
+        size_per_level_usd = total / num_levels
 
         # Create levels using geometric spacing (equal percentage intervals)
         price_ratio = (max_price / min_price) ** (1 / (num_levels - 1))
