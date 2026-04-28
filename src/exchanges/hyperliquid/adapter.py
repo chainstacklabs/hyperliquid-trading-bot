@@ -37,6 +37,7 @@ class HyperliquidAdapter(ExchangeAdapter):
         private_key: str,
         testnet: bool = True,
         account_address: Optional[str] = None,
+        dex: Optional[str] = None,
     ):
         super().__init__("Hyperliquid")
         self.private_key = private_key
@@ -48,6 +49,10 @@ class HyperliquidAdapter(ExchangeAdapter):
         # signer's own address (i.e. signer == master).
         self.account_address = account_address
 
+        # HIP-3 builder-deployed perp dex name; None = main perp dex (default).
+        # Per-call dex overrides are also accepted on get_balance/positions etc.
+        self.dex = dex
+
         # Hyperliquid SDK components (will be initialized on connect)
         self.info = None
         self.exchange = None
@@ -55,9 +60,11 @@ class HyperliquidAdapter(ExchangeAdapter):
         # Endpoint router for smart routing
         self.endpoint_router = get_endpoint_router(testnet)
 
-        # Asset metadata caches populated on connect
-        self._perp_sz_decimals: Dict[str, int] = {}
+        # Asset metadata caches populated on connect.
+        # Perp cache is keyed by (dex_name_or_empty, asset).
+        self._perp_sz_decimals: Dict[tuple, int] = {}
         self._spot_sz_decimals: Dict[str, int] = {}
+        self._known_dexes: List[str] = [""]  # "" = main
 
     async def connect(self) -> bool:
         """Connect to Hyperliquid with smart endpoint routing"""
@@ -119,14 +126,25 @@ class HyperliquidAdapter(ExchangeAdapter):
             return False
 
     def _load_asset_metadata(self) -> None:
+        # Discover available HIP-3 dexes; main perp is "" by SDK convention.
         try:
-            meta = self.info.meta()
-            for asset_info in meta.get("universe", []):
-                name = asset_info.get("name")
-                if name is not None:
-                    self._perp_sz_decimals[name] = int(asset_info.get("szDecimals", 0))
+            dexes = self.info.perp_dexs() or []
+            self._known_dexes = [""] + [d.get("name") for d in dexes if isinstance(d, dict) and d.get("name")]
         except Exception as e:
-            print(f"⚠️ Failed to load perp metadata: {e}")
+            print(f"⚠️ Failed to discover perp dexes (HIP-3 support disabled): {e}")
+            self._known_dexes = [""]
+
+        for dex_name in self._known_dexes:
+            try:
+                meta = self.info.meta(dex=dex_name)
+                for asset_info in meta.get("universe", []):
+                    name = asset_info.get("name")
+                    if name is not None:
+                        self._perp_sz_decimals[(dex_name, name)] = int(
+                            asset_info.get("szDecimals", 0)
+                        )
+            except Exception as e:
+                print(f"⚠️ Failed to load perp metadata for dex={dex_name!r}: {e}")
 
         try:
             spot_meta = self.info.spot_meta()
@@ -172,21 +190,49 @@ class HyperliquidAdapter(ExchangeAdapter):
     def _is_spot(self, asset: str) -> bool:
         return "/" in asset or asset.startswith("@")
 
-    def _sz_decimals(self, asset: str) -> int:
-        cache = self._spot_sz_decimals if self._is_spot(asset) else self._perp_sz_decimals
-        if asset not in cache:
-            raise RuntimeError(
-                f"Missing precision metadata for {asset}; meta()/spot_meta() may have failed at connect"
-            )
-        return cache[asset]
+    def _dex_arg(self, dex: Optional[str]) -> str:
+        """Resolve to the SDK's dex string ('' = main perp).
 
-    def _round_price(self, asset: str, price: float) -> float:
+        If dex is unspecified, fall back to the adapter's configured dex.
+        """
+        return (dex if dex is not None else self.dex) or ""
+
+    def _infer_dex_from_asset(self, asset: str, dex: Optional[str] = None) -> str:
+        """HIP-3 asset names are namespaced as '<dex>:<symbol>'. If `dex` is
+        unspecified and the asset has a colon prefix, take the prefix; else
+        fall back to the adapter's default dex.
+        """
+        if dex is not None:
+            return dex
+        if ":" in asset and not asset.startswith("@"):
+            return asset.split(":", 1)[0]
+        return self._dex_arg(None)
+
+    def _sz_decimals(self, asset: str, dex: Optional[str] = None) -> int:
+        if self._is_spot(asset):
+            if asset not in self._spot_sz_decimals:
+                raise RuntimeError(
+                    f"Missing spot precision metadata for {asset}"
+                )
+            return self._spot_sz_decimals[asset]
+
+        resolved = self._infer_dex_from_asset(asset, dex)
+        key = (resolved, asset)
+        if key not in self._perp_sz_decimals:
+            raise RuntimeError(
+                f"Missing perp precision metadata for {asset} on dex={resolved!r}"
+            )
+        return self._perp_sz_decimals[key]
+
+    def _round_price(
+        self, asset: str, price: float, dex: Optional[str] = None
+    ) -> float:
         max_dec = (
             self.SPOT_PX_MAX_DECIMALS
             if self._is_spot(asset)
             else self.PERP_PX_MAX_DECIMALS
         )
-        px_decimals = max(0, max_dec - self._sz_decimals(asset))
+        px_decimals = max(0, max_dec - self._sz_decimals(asset, dex))
         # Hyperliquid: integer prices are exempt from the 5-sig-fig rule
         # (https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size)
         if price == int(price):
@@ -194,13 +240,20 @@ class HyperliquidAdapter(ExchangeAdapter):
         sig5 = float(f"{float(price):.5g}")
         return round(sig5, px_decimals)
 
-    def _round_size(self, asset: str, size: float) -> float:
-        rounded = round(float(size), self._sz_decimals(asset))
+    def _round_size(
+        self, asset: str, size: float, dex: Optional[str] = None
+    ) -> float:
+        sz_dec = self._sz_decimals(asset, dex)
+        rounded = round(float(size), sz_dec)
         if float(size) > 0 and rounded <= 0:
             raise RuntimeError(
-                f"Size {size} for {asset} rounds to 0 at szDecimals={self._sz_decimals(asset)}; below minimum increment"
+                f"Size {size} for {asset} rounds to 0 at szDecimals={sz_dec}; below minimum increment"
             )
         return rounded
+
+    def list_perp_dexes(self) -> List[str]:
+        """Return known perp dex names ('' = main perp dex)."""
+        return list(self._known_dexes)
 
     async def disconnect(self) -> None:
         """Disconnect from Hyperliquid"""
@@ -211,14 +264,15 @@ class HyperliquidAdapter(ExchangeAdapter):
 
     PERP_QUOTE_ALIASES = {"USD", "USDC", "USDC_PERP"}
 
-    async def get_balance(self, asset: str) -> Balance:
+    async def get_balance(
+        self, asset: str, dex: Optional[str] = None
+    ) -> Balance:
         """Get account balance for an asset.
 
         Asset names in PERP_QUOTE_ALIASES (USD / USDC / USDC_PERP) return the
-        cross-margin account value. Any other name reads from spot_user_state.
-        Note: "USDC" is treated as the perp quote here because the bot's grid
-        configs default to that — to read a spot USDC balance, look up the pair
-        directly via spot_meta.
+        cross-margin account value for the selected `dex` (defaults to the
+        adapter's configured dex; "" / None == main perp dex). Any other
+        name reads spot_user_state and ignores `dex`.
         """
         if not self.is_connected:
             raise RuntimeError("Not connected to exchange")
@@ -227,7 +281,7 @@ class HyperliquidAdapter(ExchangeAdapter):
             address = self.account_address
 
             if asset.upper() in self.PERP_QUOTE_ALIASES:
-                user_state = self.info.user_state(address)
+                user_state = self.info.user_state(address, dex=self._dex_arg(dex))
                 summary = user_state.get("crossMarginSummary", {})
                 account_value = float(summary.get("accountValue", 0))
                 margin_used = float(summary.get("totalMarginUsed", 0))
@@ -255,14 +309,20 @@ class HyperliquidAdapter(ExchangeAdapter):
         except Exception as e:
             raise RuntimeError(f"Failed to get {asset} balance: {e}")
 
-    async def get_market_price(self, asset: str) -> float:
-        """Get current market price"""
+    async def get_market_price(
+        self, asset: str, dex: Optional[str] = None
+    ) -> float:
+        """Get current market price for the asset on the selected dex.
+
+        If `dex` is None, infer from a HIP-3 namespaced asset name
+        (e.g. "felix:CRCL" -> dex="felix").
+        """
         if not self.is_connected:
             raise RuntimeError("Not connected to exchange")
 
         try:
-            # Get all mids (market prices)
-            all_mids = self.info.all_mids()
+            resolved_dex = self._infer_dex_from_asset(asset, dex)
+            all_mids = self.info.all_mids(dex=resolved_dex)
 
             # Find asset price
             if asset in all_mids:
@@ -284,13 +344,14 @@ class HyperliquidAdapter(ExchangeAdapter):
 
             from hyperliquid.utils.signing import OrderType as HLOrderType
 
-            rounded_size = self._round_size(order.asset, order.size)
+            order_dex = order.dex
+            rounded_size = self._round_size(order.asset, order.size, dex=order_dex)
 
             if order.order_type == OrderType.MARKET:
-                market_price = await self.get_market_price(order.asset)
+                market_price = await self.get_market_price(order.asset, dex=order_dex)
                 slippage = 1.01 if is_buy else 0.99
                 adjusted_price = self._round_price(
-                    order.asset, market_price * slippage
+                    order.asset, market_price * slippage, dex=order_dex
                 )
                 result = self.exchange.order(
                     name=order.asset,
@@ -301,7 +362,9 @@ class HyperliquidAdapter(ExchangeAdapter):
                     reduce_only=False,
                 )
             else:
-                rounded_price = self._round_price(order.asset, order.price)
+                rounded_price = self._round_price(
+                    order.asset, order.price, dex=order_dex
+                )
                 result = self.exchange.order(
                     name=order.asset,
                     is_buy=is_buy,
@@ -329,8 +392,10 @@ class HyperliquidAdapter(ExchangeAdapter):
         except Exception as e:
             raise RuntimeError(f"Failed to place {order.side.value} order: {e}")
 
-    async def cancel_order(self, exchange_order_id: str) -> bool:
-        """Cancel an order"""
+    async def cancel_order(
+        self, exchange_order_id: str, dex: Optional[str] = None
+    ) -> bool:
+        """Cancel an order. Searches `dex` (defaults to adapter dex) for the oid."""
         if not self.is_connected:
             raise RuntimeError("Not connected to exchange")
 
@@ -339,7 +404,9 @@ class HyperliquidAdapter(ExchangeAdapter):
             oid = int(exchange_order_id)
 
             # Find the asset name for this order by querying open orders
-            open_orders = self.info.open_orders(self.account_address)
+            open_orders = self.info.open_orders(
+                self.account_address, dex=self._dex_arg(dex)
+            )
             target_order = None
 
             for order in open_orders:
@@ -395,14 +462,16 @@ class HyperliquidAdapter(ExchangeAdapter):
             exchange_order_id=exchange_order_id,
         )
 
-    async def get_market_info(self, asset: str) -> MarketInfo:
-        """Get market information"""
+    async def get_market_info(
+        self, asset: str, dex: Optional[str] = None
+    ) -> MarketInfo:
+        """Get market information for the asset on the selected dex."""
         if not self.is_connected:
             raise RuntimeError("Not connected to exchange")
 
         try:
-            # Get market metadata
-            meta = self.info.meta()
+            resolved_dex = self._infer_dex_from_asset(asset, dex)
+            meta = self.info.meta(dex=resolved_dex)
             universe = meta.get("universe", [])
 
             for asset_info in universe:
@@ -411,8 +480,10 @@ class HyperliquidAdapter(ExchangeAdapter):
                     px_dec = max(0, self.PERP_PX_MAX_DECIMALS - sz_dec)
                     size_step = 10 ** (-sz_dec) if sz_dec > 0 else 1.0
                     try:
-                        mark = await self.get_market_price(asset)
-                        notional_min_size = self.MIN_NOTIONAL_USD / mark if mark > 0 else size_step
+                        mark = await self.get_market_price(asset, dex=resolved_dex)
+                        notional_min_size = (
+                            self.MIN_NOTIONAL_USD / mark if mark > 0 else size_step
+                        )
                     except Exception:
                         notional_min_size = size_step
                     return MarketInfo(
@@ -424,36 +495,47 @@ class HyperliquidAdapter(ExchangeAdapter):
                         size_precision=sz_dec,
                         is_active=True,
                         min_notional=self.MIN_NOTIONAL_USD,
+                        dex=resolved_dex or None,
                     )
 
-            raise ValueError(f"Asset {asset} not found")
+            raise ValueError(f"Asset {asset} not found on dex={resolved_dex!r}")
 
         except Exception as e:
             raise RuntimeError(f"Failed to get market info for {asset}: {e}")
 
-    async def get_open_orders(self) -> List[Order]:
-        """Get all open orders"""
+    async def get_open_orders(
+        self, dex: Optional[str] = None, all_dexes: bool = False
+    ) -> List[Order]:
+        """Get open orders.
+
+        By default returns orders for the adapter's configured dex (or main).
+        Set `all_dexes=True` to aggregate across every known HIP-3 dex.
+        """
         if not self.is_connected:
             return []
 
         try:
-            open_orders = self.info.open_orders(self.account_address)
-            orders = []
-
-            for order_info in open_orders:
-                order = Order(
-                    id=str(order_info.get("oid", "")),
-                    asset=order_info.get("coin", ""),
-                    side=OrderSide.BUY
-                    if order_info.get("side") == "B"
-                    else OrderSide.SELL,
-                    size=float(order_info.get("sz", 0)),
-                    order_type=OrderType.LIMIT,  # Hyperliquid default
-                    price=float(order_info.get("limitPx", 0)),
-                    status=OrderStatus.SUBMITTED,
-                    exchange_order_id=str(order_info.get("oid", "")),
-                )
-                orders.append(order)
+            dex_list = self._known_dexes if all_dexes else [self._dex_arg(dex)]
+            orders: List[Order] = []
+            for d in dex_list:
+                raw = self.info.open_orders(self.account_address, dex=d)
+                for order_info in raw or []:
+                    asset_name = order_info.get("coin", "")
+                    orders.append(
+                        Order(
+                            id=str(order_info.get("oid", "")),
+                            asset=asset_name,
+                            side=OrderSide.BUY
+                            if order_info.get("side") == "B"
+                            else OrderSide.SELL,
+                            size=float(order_info.get("sz", 0)),
+                            order_type=OrderType.LIMIT,
+                            price=float(order_info.get("limitPx", 0)),
+                            status=OrderStatus.SUBMITTED,
+                            exchange_order_id=str(order_info.get("oid", "")),
+                            dex=d or None,
+                        )
+                    )
 
             return orders
 
@@ -467,47 +549,48 @@ class HyperliquidAdapter(ExchangeAdapter):
             return False
 
         try:
-            # Simple health check - get account state
-            self.info.user_state(self.account_address)
+            self.info.user_state(self.account_address, dex=self._dex_arg(None))
             return True
         except Exception:
             return False
 
-    async def get_positions(self) -> List["Position"]:
-        """Get all current positions from Hyperliquid"""
+    async def get_positions(
+        self, dex: Optional[str] = None, all_dexes: bool = False
+    ) -> List["Position"]:
+        """Get current positions on the selected dex (or aggregated)."""
         if not self.is_connected:
             return []
 
         try:
-            # Import Position here to avoid circular imports
             from interfaces.strategy import Position
 
-            # Get user state which includes positions
-            user_state = self.info.user_state(self.account_address)
-            positions = []
+            dex_list = self._known_dexes if all_dexes else [self._dex_arg(dex)]
+            positions: List[Position] = []
+            for d in dex_list:
+                user_state = self.info.user_state(self.account_address, dex=d)
+                for pos_info in user_state.get("assetPositions", []):
+                    pos = pos_info.get("position", {})
+                    position_size = float(pos.get("szi", 0))
+                    if position_size == 0:
+                        continue
 
-            for pos_info in user_state.get("assetPositions", []):
-                pos = pos_info.get("position", {})
-                position_size = float(pos.get("szi", 0))
-                if position_size == 0:
-                    continue
+                    coin = pos.get("coin", "")
+                    entry_price = float(pos.get("entryPx") or 0)
+                    current_price = await self.get_market_price(coin, dex=d)
+                    current_value = abs(position_size) * current_price
+                    unrealized_pnl = float(pos.get("unrealizedPnl", 0))
 
-                coin = pos.get("coin", "")
-                entry_price = float(pos.get("entryPx") or 0)
-                current_price = await self.get_market_price(coin)
-                current_value = abs(position_size) * current_price
-                unrealized_pnl = float(pos.get("unrealizedPnl", 0))
-
-                positions.append(
-                    Position(
-                        asset=coin,
-                        size=position_size,
-                        entry_price=entry_price,
-                        current_value=current_value,
-                        unrealized_pnl=unrealized_pnl,
-                        timestamp=time.time(),
+                    positions.append(
+                        Position(
+                            asset=coin,
+                            size=position_size,
+                            entry_price=entry_price,
+                            current_value=current_value,
+                            unrealized_pnl=unrealized_pnl,
+                            timestamp=time.time(),
+                            dex=d or None,
+                        )
                     )
-                )
 
             return positions
 
@@ -515,14 +598,23 @@ class HyperliquidAdapter(ExchangeAdapter):
             print(f"❌ Error getting positions: {e}")
             return []
 
-    async def close_position(self, asset: str, size: Optional[float] = None) -> bool:
-        """Close a position by placing a market order"""
+    async def close_position(
+        self,
+        asset: str,
+        size: Optional[float] = None,
+        dex: Optional[str] = None,
+    ) -> bool:
+        """Close a position via market_close.
+
+        `dex` defaults to the dex inferred from the asset name (HIP-3 prefix)
+        or the adapter's configured dex.
+        """
         if not self.is_connected:
             return False
 
         try:
-            # Get current positions to determine position details
-            positions = await self.get_positions()
+            resolved_dex = self._infer_dex_from_asset(asset, dex)
+            positions = await self.get_positions(dex=resolved_dex)
             target_position = None
 
             for pos in positions:
@@ -531,7 +623,7 @@ class HyperliquidAdapter(ExchangeAdapter):
                     break
 
             if not target_position:
-                print(f"❌ No position found for {asset}")
+                print(f"❌ No position found for {asset} on dex={resolved_dex!r}")
                 return False
 
             if size is None:
@@ -539,7 +631,7 @@ class HyperliquidAdapter(ExchangeAdapter):
             else:
                 close_size = min(size, abs(target_position.size))
 
-            close_size = self._round_size(asset, close_size)
+            close_size = self._round_size(asset, close_size, dex=resolved_dex)
 
             result = self.exchange.market_close(coin=asset, sz=close_size)
 
@@ -554,8 +646,14 @@ class HyperliquidAdapter(ExchangeAdapter):
             print(f"❌ Error closing position {asset}: {e}")
             return False
 
-    async def get_account_metrics(self) -> Dict[str, Any]:
-        """Get account-level metrics for risk assessment"""
+    async def get_account_metrics(
+        self, dex: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get account-level metrics for risk assessment.
+
+        `dex` selects which perp dex's clearinghouse state to read; defaults
+        to the adapter's configured dex.
+        """
         if not self.is_connected:
             return {
                 "total_value": 0.0,
@@ -566,8 +664,8 @@ class HyperliquidAdapter(ExchangeAdapter):
             }
 
         try:
-            # Get user state
-            user_state = self.info.user_state(self.account_address)
+            resolved_dex = self._dex_arg(dex)
+            user_state = self.info.user_state(self.account_address, dex=resolved_dex)
 
             total_value = 0.0
             margin_used = 0.0
@@ -581,7 +679,7 @@ class HyperliquidAdapter(ExchangeAdapter):
                 for p in user_state.get("assetPositions", [])
             )
 
-            positions = await self.get_positions()
+            positions = await self.get_positions(dex=resolved_dex)
             total_pnl = unrealized_pnl
 
             # Estimate drawdown percentage (this would be more sophisticated in production)

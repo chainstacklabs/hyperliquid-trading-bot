@@ -16,7 +16,11 @@ load_dotenv()
 # You can only use this endpoint on the official Hyperliquid public API.
 # It is not available through Chainstack, as the open-source node implementation does not support it yet.
 BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
-ASSETS_TO_SHOW = ["BTC", "ETH", "SOL", "DOGE", "AVAX"]
+# HIP-3: optional builder-deployed dex name (e.g. "felix"). Empty = main perp.
+DEX = os.getenv("DEX", "")
+ASSETS_TO_SHOW = (
+    ["BTC", "ETH", "SOL", "DOGE", "AVAX"] if not DEX else None  # show all on HIP-3
+)
 
 
 async def method_1_sdk() -> Optional[Dict[str, str]]:
@@ -26,13 +30,14 @@ async def method_1_sdk() -> Optional[Dict[str, str]]:
 
     try:
         info = Info(BASE_URL, skip_ws=True)
-        all_prices = info.all_mids()
+        all_prices = info.all_mids(dex=DEX)
 
-        print(f"Got prices for {len(all_prices)} assets")
-        for asset in ASSETS_TO_SHOW:
+        print(f"Got prices for {len(all_prices)} assets (dex={DEX or 'main'})")
+        assets = ASSETS_TO_SHOW or list(all_prices.keys())[:5]
+        for asset in assets:
             if asset in all_prices:
                 price = float(all_prices[asset])
-                print(f"   {asset}: ${price:,.2f}")
+                print(f"   {asset}: ${price:,.4f}")
 
         return all_prices
 
@@ -48,20 +53,23 @@ async def method_2_raw_api() -> Optional[Dict[str, str]]:
 
     try:
         async with httpx.AsyncClient() as client:
+            payload = {"type": "allMids"}
+            if DEX:
+                payload["dex"] = DEX
             response = await client.post(
                 f"{BASE_URL}/info",
-                json={"type": "allMids"},
+                json=payload,
                 headers={"Content-Type": "application/json"},
             )
 
             if response.status_code == 200:
                 all_prices = response.json()
-                print(f"Got prices for {len(all_prices)} assets")
-
-                for asset in ASSETS_TO_SHOW:
+                print(f"Got prices for {len(all_prices)} assets (dex={DEX or 'main'})")
+                assets = ASSETS_TO_SHOW or list(all_prices.keys())[:5]
+                for asset in assets:
                     if asset in all_prices:
                         price = float(all_prices[asset])
-                        print(f"   {asset}: ${price:,.2f}")
+                        print(f"   {asset}: ${price:,.4f}")
 
                 return all_prices
             else:

@@ -139,12 +139,18 @@ class PositionSizingConfig:
 
 @dataclass
 class GridConfig:
-    """Grid configuration"""
+    """Grid configuration.
+
+    `dex` selects a HIP-3 builder-deployed perp dex (None = main perp dex).
+    `is_spot` switches the asset namespace to spot pairs.
+    """
 
     symbol: str = "BTC"
     levels: int = 15  # Number of grid levels
     price_range: PriceRangeConfig = field(default_factory=PriceRangeConfig)
     position_sizing: PositionSizingConfig = field(default_factory=PositionSizingConfig)
+    dex: Optional[str] = None
+    is_spot: bool = False
 
     def validate(self) -> None:
         """Validate grid configuration"""
@@ -152,6 +158,8 @@ class GridConfig:
             raise ValueError("symbol cannot be empty")
         if not 3 <= self.levels <= 50:
             raise ValueError("levels must be between 3 and 50")
+        if self.dex is not None and not self.dex.strip():
+            raise ValueError("dex must be None or a non-empty string")
         self.price_range.validate()
         self.position_sizing.validate()
 
@@ -217,15 +225,24 @@ class MarketDataConfig:
 
 @dataclass
 class ExchangeConfig:
-    """Exchange configuration settings"""
+    """Exchange configuration settings.
+
+    `dex` selects a HIP-3 builder-deployed perp dex at adapter level
+    (None = main perp dex). Bot strategies may further narrow per-symbol
+    via GridConfig.dex.
+    """
 
     type: str = "hyperliquid"  # Exchange type (hyperliquid, hl, etc.)
     testnet: bool = True  # Use testnet for development
+    dex: Optional[str] = None
+    account_address: Optional[str] = None
 
     def validate(self) -> None:
         """Validate exchange configuration"""
         if not self.type:
             raise ValueError("exchange type cannot be empty")
+        if self.dex is not None and not self.dex.strip():
+            raise ValueError("dex must be None or a non-empty string")
 
 
 @dataclass

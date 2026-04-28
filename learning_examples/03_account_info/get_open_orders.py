@@ -15,6 +15,8 @@ load_dotenv()
 # It is not available through Chainstack, as the open-source node implementation does not support it yet.
 BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
 WALLET_ADDRESS = os.getenv("TESTNET_WALLET_ADDRESS")
+# HIP-3: optional builder-deployed dex name. Empty = main perp.
+DEX = os.getenv("DEX", "")
 
 
 async def method_1_sdk():
@@ -24,9 +26,9 @@ async def method_1_sdk():
 
     try:
         info = Info(BASE_URL, skip_ws=True)
-        open_orders = info.open_orders(WALLET_ADDRESS)
+        open_orders = info.open_orders(WALLET_ADDRESS, dex=DEX)
 
-        print(f"Found {len(open_orders)} open orders")
+        print(f"Found {len(open_orders)} open orders (dex={DEX or 'main'})")
 
         if open_orders:
             for order in open_orders:
@@ -65,9 +67,12 @@ async def method_2_raw_api():
 
     try:
         async with httpx.AsyncClient() as client:
+            payload = {"type": "openOrders", "user": WALLET_ADDRESS}
+            if DEX:
+                payload["dex"] = DEX
             response = await client.post(
                 f"{BASE_URL}/info",
-                json={"type": "openOrders", "user": WALLET_ADDRESS},
+                json=payload,
                 headers={"Content-Type": "application/json"},
             )
 

@@ -14,50 +14,64 @@ load_dotenv()
 
 BASE_URL = os.getenv("HYPERLIQUID_PUBLIC_BASE_URL")
 MIN_FUNDING_RATE = 0.0001  # 0.01% minimum threshold
+# HIP-3 dex sweep is comma-separated; "" means main perp.
+# Example: DEXES="" or DEXES=",felix,unit" or DEXES="all" to iterate every dex.
+DEXES_ENV = os.getenv("DEXES", "")
 
 
 async def get_funding_rates_sdk() -> Optional[List[Dict]]:
-    """Method 1: Using Hyperliquid Python SDK"""
-    print("Method 1: Hyperliquid SDK")
+    """Method 1: Using Hyperliquid Python SDK across all perp dexes (HIP-3)."""
+    print("Method 1: Hyperliquid SDK (multi-dex)")
     print("-" * 30)
 
     try:
         info = Info(BASE_URL, skip_ws=True)
-        meta_and_contexts = info.meta_and_asset_ctxs()
-        
-        funding_opportunities = []
-        
-        if meta_and_contexts and len(meta_and_contexts) >= 2:
-            meta = meta_and_contexts[0]
-            asset_ctxs = meta_and_contexts[1]
-            
-            # Map asset names from universe to contexts by index
-            for i, asset_ctx in enumerate(asset_ctxs):
-                asset_name = meta["universe"][i]["name"] if i < len(meta["universe"]) else f"UNKNOWN_{i}"
-                funding_rate = float(asset_ctx.get("funding", "0"))
-                mark_price = float(asset_ctx.get("markPx", "0"))
-                
-                if funding_rate > MIN_FUNDING_RATE:
-                    funding_opportunities.append({
-                        "asset": asset_name,
-                        "funding_rate": funding_rate,
-                        "funding_rate_pct": funding_rate * 100,
-                        "annual_rate_pct": funding_rate * 100 * 365 * 24,  # 24 payments/day
-                        "mark_price": mark_price
-                    })
-            
-            funding_opportunities.sort(key=lambda x: x["funding_rate"], reverse=True)
-            
-            print(f"Found {len(funding_opportunities)} positive funding opportunities")
-            print()
-            
-            for i, opp in enumerate(funding_opportunities[:10], 1):
-                print(f"{i:2d}. {opp['asset']:>6}: {opp['funding_rate_pct']:+7.4f}% "
-                      f"(Annual: {opp['annual_rate_pct']:+7.1f}%) @ ${opp['mark_price']:,.2f}")
-            
-            return funding_opportunities
-        
-        return None
+        # Build the list of dexes to query.
+        if DEXES_ENV == "all":
+            dexes = info.perp_dexs() or []
+            dex_names = [""] + [
+                d.get("name") for d in dexes if isinstance(d, dict) and d.get("name")
+            ]
+        elif DEXES_ENV:
+            dex_names = [d.strip() for d in DEXES_ENV.split(",")]
+        else:
+            dex_names = [""]
+
+        funding_opportunities: List[Dict] = []
+        for dex_name in dex_names:
+            try:
+                meta = info.meta(dex=dex_name)
+                # meta_and_asset_ctxs is main-only on the SDK; fall back per-dex
+                # to a raw POST when the helper is unavailable.
+                ctxs = info.post(
+                    "/info", {"type": "metaAndAssetCtxs", **({"dex": dex_name} if dex_name else {})}
+                )
+                if not (isinstance(ctxs, list) and len(ctxs) >= 2):
+                    continue
+                _, asset_ctxs = ctxs[0], ctxs[1]
+                universe = meta.get("universe", [])
+                for i, asset_ctx in enumerate(asset_ctxs):
+                    asset_name = universe[i]["name"] if i < len(universe) else f"UNKNOWN_{i}"
+                    funding_rate = float(asset_ctx.get("funding", "0"))
+                    mark_price = float(asset_ctx.get("markPx", "0"))
+                    if funding_rate > MIN_FUNDING_RATE:
+                        funding_opportunities.append({
+                            "asset": asset_name,
+                            "dex": dex_name or "main",
+                            "funding_rate": funding_rate,
+                            "funding_rate_pct": funding_rate * 100,
+                            "annual_rate_pct": funding_rate * 100 * 365 * 24,
+                            "mark_price": mark_price,
+                        })
+            except Exception as e:
+                print(f"  skip dex={dex_name!r}: {e}")
+
+        funding_opportunities.sort(key=lambda x: x["funding_rate"], reverse=True)
+        print(f"Found {len(funding_opportunities)} positive funding opportunities across {len(dex_names)} dex(es)")
+        for i, opp in enumerate(funding_opportunities[:10], 1):
+            print(f"{i:2d}. [{opp['dex']:>6}] {opp['asset']:>14}: {opp['funding_rate_pct']:+7.4f}% "
+                  f"(Annual: {opp['annual_rate_pct']:+7.1f}%) @ ${opp['mark_price']:,.4f}")
+        return funding_opportunities
 
     except Exception as e:
         print(f"SDK method failed: {e}")

@@ -22,7 +22,10 @@ class SignalType(Enum):
 
 @dataclass
 class TradingSignal:
-    """A trading signal from a strategy"""
+    """A trading signal from a strategy.
+
+    `dex` selects a HIP-3 builder-deployed perp dex (None = main perp dex).
+    """
 
     signal_type: SignalType
     asset: str
@@ -30,6 +33,8 @@ class TradingSignal:
     price: Optional[float] = None  # None = market order
     reason: str = ""
     metadata: Dict[str, Any] = None
+    dex: Optional[str] = None
+    is_spot: bool = False
 
     def __post_init__(self):
         if self.metadata is None:
@@ -47,6 +52,7 @@ class MarketData:
     bid: Optional[float] = None
     ask: Optional[float] = None
     volatility: Optional[float] = None
+    dex: Optional[str] = None
 
 
 @dataclass
@@ -59,6 +65,7 @@ class Position:
     current_value: float
     unrealized_pnl: float
     timestamp: float
+    dex: Optional[str] = None
 
 
 class TradingStrategy(ABC):

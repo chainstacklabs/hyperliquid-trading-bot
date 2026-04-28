@@ -44,6 +44,15 @@ class HyperliquidMarketData:
         # Endpoint router for smart routing
         self.endpoint_router = get_endpoint_router(testnet)
 
+        # HIP-3 dex tracking: which dex an asset is subscribed via, and which
+        # dex-scoped allMids subscriptions have already been sent.
+        self._asset_dex: Dict[str, str] = {}
+        self._dex_subscriptions: set = set()
+
+        # Generic channel subscription callbacks keyed by subscription type
+        # (e.g. "bbo", "activeAssetCtx", "userTwapSliceFills").
+        self._channel_callbacks: Dict[str, List[Callable[[Dict[str, Any]], Any]]] = {}
+
     def _resolve_ws_url(self) -> str:
         url = self.endpoint_router.get_endpoint_for_method("subscribe_price")
         if url:
@@ -96,22 +105,49 @@ class HyperliquidMarketData:
         print("🔌 Disconnected from Hyperliquid WebSocket")
 
     async def subscribe_price_updates(
-        self, asset: str, callback: Callable[[MarketData], None]
+        self,
+        asset: str,
+        callback: Callable[[MarketData], None],
+        dex: Optional[str] = None,
     ) -> None:
-        """Subscribe to price updates for an asset"""
+        """Subscribe to allMids price updates for an asset.
+
+        `dex` selects a HIP-3 dex; if not given and the asset name is
+        namespaced (e.g. "felix:CRCL"), the prefix is used. allMids on the
+        main dex returns spot mids too, so spot subscriptions stay there.
+        """
+        resolved_dex = (
+            dex
+            if dex is not None
+            else (
+                asset.split(":", 1)[0]
+                if ":" in asset and not asset.startswith("@")
+                else ""
+            )
+        )
+        self._asset_dex[asset] = resolved_dex
 
         if asset not in self.price_callbacks:
             self.price_callbacks[asset] = []
-
         self.price_callbacks[asset].append(callback)
         self.subscribed_assets.add(asset)
 
-        # Subscribe via WebSocket
-        if self.ws and self.running:
-            subscribe_msg = {"method": "subscribe", "subscription": {"type": "allMids"}}
-            await self.ws.send(json.dumps(subscribe_msg))
+        if (
+            self.ws
+            and self.running
+            and resolved_dex not in self._dex_subscriptions
+        ):
+            subscription: Dict[str, Any] = {"type": "allMids"}
+            if resolved_dex:
+                subscription["dex"] = resolved_dex
+            await self.ws.send(
+                json.dumps({"method": "subscribe", "subscription": subscription})
+            )
+            self._dex_subscriptions.add(resolved_dex)
 
-        print(f"📊 Subscribed to {asset} price updates")
+        print(
+            f"📊 Subscribed to {asset} price updates (dex={resolved_dex or 'main'})"
+        )
 
     async def unsubscribe_price_updates(
         self, asset: str, callback: Callable[[MarketData], None]
@@ -126,6 +162,34 @@ class HyperliquidMarketData:
                     self.subscribed_assets.discard(asset)
             except ValueError:
                 pass
+
+    async def subscribe_channel(
+        self,
+        subscription: Dict[str, Any],
+        callback: Callable[[Dict[str, Any]], Any],
+    ) -> None:
+        """Generic subscription helper for HIP-3-era channels (bbo,
+        activeAssetCtx, activeAssetData, userTwapSliceFills, userTwapHistory,
+        webData3, allDexsAssetCtxs, allDexsClearinghouseState, etc.).
+
+        The caller passes the full `subscription` dict (e.g. {"type": "bbo",
+        "coin": "BTC"}). The callback receives the raw `data` payload of every
+        matching message. Channel name matching is permissive: the message's
+        "channel" field is matched against `subscription["type"]` exactly,
+        with the known alias activeAssetCtx -> activeSpotAssetCtx for spot.
+        """
+        if not (self.ws and self.running):
+            raise RuntimeError("WebSocket not connected")
+
+        sub_type = subscription.get("type")
+        if not sub_type:
+            raise ValueError("subscription must have a 'type'")
+
+        self._channel_callbacks.setdefault(sub_type, []).append(callback)
+        await self.ws.send(
+            json.dumps({"method": "subscribe", "subscription": subscription})
+        )
+        print(f"📡 Subscribed to channel: {subscription}")
 
     def get_latest_price(self, asset: str) -> Optional[float]:
         """Get latest cached price for an asset"""
@@ -186,9 +250,25 @@ class HyperliquidMarketData:
     async def _process_message(self, data: Dict[str, Any]) -> None:
         """Process incoming WebSocket message"""
 
-        # Handle different message types
-        if data.get("channel") == "allMids":
+        channel = data.get("channel")
+        if channel == "allMids":
             await self._handle_price_update(data.get("data", {}))
+            return
+
+        # Map activeSpotAssetCtx -> activeAssetCtx for callers that subscribed
+        # via the generic name; SDK 0.16+ delivers spot under a distinct channel
+        # but the subscription type is still "activeAssetCtx".
+        lookup = "activeAssetCtx" if channel == "activeSpotAssetCtx" else channel
+        callbacks = self._channel_callbacks.get(lookup) or []
+        for cb in callbacks:
+            try:
+                payload = data.get("data", {})
+                if asyncio.iscoroutinefunction(cb):
+                    asyncio.create_task(cb(payload))
+                else:
+                    cb(payload)
+            except Exception as e:
+                print(f"❌ Error in channel callback for {channel}: {e}")
 
     async def _handle_price_update(self, price_data: Dict[str, Any]) -> None:
         """Handle price update message"""
@@ -248,13 +328,24 @@ class HyperliquidMarketData:
             return False
 
     async def _resubscribe_all(self) -> None:
-        """Re-subscribe to all assets after reconnection"""
+        """Re-subscribe across every dex previously seen after reconnection."""
 
-        if self.subscribed_assets and self.ws and self.running:
-            subscribe_msg = {"method": "subscribe", "subscription": {"type": "allMids"}}
-            await self.ws.send(json.dumps(subscribe_msg))
+        if not (self.subscribed_assets and self.ws and self.running):
+            return
 
-            print(f"🔄 Re-subscribed to {len(self.subscribed_assets)} assets")
+        prior = set(self._dex_subscriptions) or {""}
+        self._dex_subscriptions.clear()
+        for d in prior:
+            subscription: Dict[str, Any] = {"type": "allMids"}
+            if d:
+                subscription["dex"] = d
+            await self.ws.send(
+                json.dumps({"method": "subscribe", "subscription": subscription})
+            )
+            self._dex_subscriptions.add(d)
+        print(
+            f"🔄 Re-subscribed across {len(prior)} dex(es) for {len(self.subscribed_assets)} assets"
+        )
 
     def get_status(self) -> Dict[str, Any]:
         """Get market data provider status"""
