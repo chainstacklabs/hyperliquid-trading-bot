@@ -44,17 +44,22 @@ class HyperliquidMarketData:
         # Endpoint router for smart routing
         self.endpoint_router = get_endpoint_router(testnet)
 
+    def _resolve_ws_url(self) -> str:
+        url = self.endpoint_router.get_endpoint_for_method("subscribe_price")
+        if url:
+            return url
+        return (
+            "wss://api.hyperliquid-testnet.xyz/ws"
+            if self.testnet
+            else "wss://api.hyperliquid.xyz/ws"
+        )
+
     async def connect(self) -> bool:
         """Connect to Hyperliquid WebSocket using public endpoint"""
         try:
             import websockets
 
-            # Use direct public WebSocket endpoint
-            ws_url = (
-                "wss://api.hyperliquid-testnet.xyz/ws"
-                if self.testnet
-                else "wss://api.hyperliquid.xyz/ws"
-            )
+            ws_url = self._resolve_ws_url()
 
             self.ws = await websockets.connect(ws_url)
             self.running = True
@@ -228,12 +233,7 @@ class HyperliquidMarketData:
         try:
             import websockets
 
-            # Use direct public WebSocket endpoint
-            ws_url = (
-                "wss://api.hyperliquid-testnet.xyz/ws"
-                if self.testnet
-                else "wss://api.hyperliquid.xyz/ws"
-            )
+            ws_url = self._resolve_ws_url()
 
             self.ws = await websockets.connect(ws_url)
 
