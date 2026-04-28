@@ -45,7 +45,12 @@ async def place_spot_order():
         exchange = Exchange(wallet, BASE_URL)
         info = Info(BASE_URL, skip_ws=True)
 
-        print(f"📱 Wallet: {wallet.address}")
+        master_address = os.getenv("TESTNET_WALLET_ADDRESS")
+        if master_address and master_address.lower() != wallet.address.lower():
+            print(f"📱 Signer (agent): {wallet.address}")
+            print(f"🏦 Trades on master: {master_address}")
+        else:
+            print(f"📱 Wallet: {wallet.address}")
         print(f"🏛️  Vault address: {exchange.vault_address}")
         print(f"🌐 Is mainnet: {exchange.base_url == 'https://api.hyperliquid.xyz'}")
 
