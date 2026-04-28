@@ -13,8 +13,12 @@ from hyperliquid.info import Info
 
 load_dotenv()
 
-BASE_URL = os.getenv("HYPERLIQUID_CHAINSTACK_BASE_URL")
+BASE_URL = os.getenv("HYPERLIQUID_CHAINSTACK_BASE_URL") or os.getenv(
+    "HYPERLIQUID_TESTNET_PUBLIC_BASE_URL"
+)
 WALLET_ADDRESS = os.getenv("TESTNET_WALLET_ADDRESS")
+# HIP-3: optional builder-deployed dex name. Empty = main perp.
+DEX = os.getenv("DEX", "")
 
 
 async def method_1_sdk() -> Optional[Account]:
@@ -26,8 +30,8 @@ async def method_1_sdk() -> Optional[Account]:
         print("Connecting to Hyperliquid testnet...")
         info = Info(BASE_URL, skip_ws=True)
 
-        user_state = info.user_state(WALLET_ADDRESS)
-        print("Connection successful! API responded with account data")
+        user_state = info.user_state(WALLET_ADDRESS, dex=DEX)
+        print(f"Connection successful! API responded with account data (dex={DEX or 'main'})")
 
         margin_summary = user_state.get("marginSummary", {})
         account_value = float(margin_summary.get("accountValue", 0))
@@ -53,9 +57,12 @@ async def method_2_raw_api() -> Optional[Account]:
     try:
         print("Making direct HTTP request to Hyperliquid API...")
         async with httpx.AsyncClient() as client:
+            payload = {"type": "clearinghouseState", "user": WALLET_ADDRESS}
+            if DEX:
+                payload["dex"] = DEX
             response = await client.post(
                 f"{BASE_URL}/info",
-                json={"type": "clearinghouseState", "user": WALLET_ADDRESS},
+                json=payload,
                 headers={"Content-Type": "application/json"},
             )
 

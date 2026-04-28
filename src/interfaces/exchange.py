@@ -38,7 +38,11 @@ class OrderStatus(Enum):
 
 @dataclass
 class Order:
-    """Order representation"""
+    """Order representation.
+
+    `dex` selects a HIP-3 builder-deployed perp dex when not None; default
+    None means the main perp dex (or spot, depending on `is_spot`).
+    """
 
     id: str
     asset: str
@@ -51,6 +55,7 @@ class Order:
     average_fill_price: float = 0.0
     exchange_order_id: Optional[str] = None
     created_at: float = 0.0  # Timestamp when order was created
+    dex: Optional[str] = None
 
 
 @dataclass
@@ -75,6 +80,7 @@ class MarketInfo:
     size_precision: int
     is_active: bool
     min_notional: float = 10.0
+    dex: Optional[str] = None
 
 
 class ExchangeAdapter(ABC):
