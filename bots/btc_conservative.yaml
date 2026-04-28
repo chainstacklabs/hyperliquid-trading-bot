@@ -40,10 +40,20 @@ risk_management:
   # Stop Loss: Automatically close positions when loss exceeds threshold
   stop_loss_enabled: false        # Options: true/false - Enable automatic stop loss
   stop_loss_pct: 8.0             # Percentage loss before closing position (range: 1-20%)
-  
-  # Take Profit: Automatically close positions when profit exceeds threshold  
+
+  # Take Profit: Automatically close positions when profit exceeds threshold
   take_profit_enabled: false      # Options: true/false - Enable automatic take profit
   take_profit_pct: 25.0          # Percentage profit before closing position (range: 5-100%)
+
+  # tpsl_mode: how stop_loss / take_profit are enforced.
+  #   "polling" (default): engine polls unrealized_pnl per price tick and
+  #                        emits a CLOSE signal when the threshold is crossed.
+  #   "grouped":           SDK 0.21+ positionTpsl. At fill time the adapter
+  #                        registers a paired TP/SL trigger pair (reduce-only
+  #                        market) sized to fully close the position. The
+  #                        matching engine fires whichever leg hits first; no
+  #                        polling, no race.
+  tpsl_mode: "polling"
   
   # Account Protection: Portfolio-level risk controls
   max_drawdown_pct: 15.0         # Stop all trading if account drawdown exceeds % (range: 5-50%)

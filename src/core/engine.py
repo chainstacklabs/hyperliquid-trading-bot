@@ -55,6 +55,12 @@ class TradingEngine:
         # State tracking
         self.current_positions: List[Position] = []
         self.pending_orders: Dict[str, Order] = {}
+        # exchange_order_id -> originating signal, used to correlate userFills
+        # events back to the strategy that triggered them.
+        self._signals_by_oid: Dict[str, TradingSignal] = {}
+        # asset -> True once a position is open for it; used to decide whether
+        # a fill represents an opening trade that needs paired TP/SL armed.
+        self._tpsl_armed: Dict[str, bool] = {}
         self.executed_trades = 0
         self.total_pnl = 0.0
 
@@ -178,6 +184,14 @@ class TradingEngine:
         # Subscribe to market data for strategy asset
         asset = self.config.get("strategy", {}).get("symbol", "BTC")
         await self.market_data.subscribe_price_updates(asset, self._handle_price_update)
+
+        # Subscribe to real fill events; on_trade_executed now fires when the
+        # matching engine actually fills, not when an oid comes back from
+        # place_order. Required for any strategy that compounds on fills.
+        await self.market_data.subscribe_channel(
+            {"type": "userFills", "user": self.exchange.account_address},
+            self._handle_user_fill,
+        )
 
         # Main trading loop
         await self._trading_loop()
@@ -377,6 +391,7 @@ class TradingEngine:
             order_type=OrderType.LIMIT if signal.price else OrderType.MARKET,
             price=signal.price,
             created_at=current_time,
+            dex=signal.dex,
         )
 
         # Place order with exchange
@@ -391,12 +406,97 @@ class TradingEngine:
             f"📝 Placed {order.side.value} order: {order.size} {order.asset} @ ${order.price}"
         )
 
-        # Notify strategy
-        if self.strategy:
-            # Simulate immediate execution for now (real implementation would track fills)
-            executed_price = order.price or 0.0
-            self.strategy.on_trade_executed(signal, executed_price, order.size)
-            self.executed_trades += 1
+        # Track signal so the userFills callback can correlate the real fill.
+        self._signals_by_oid[exchange_order_id] = signal
+
+    async def _handle_user_fill(self, payload: Dict[str, Any]) -> None:
+        """Handle a userFills WS event.
+
+        The userFills subscription delivers a snapshot of historical fills on
+        connect (isSnapshot=True) followed by live update messages. We skip
+        the snapshot to avoid re-acting to fills that landed before the
+        engine started (false TPSL arms, double on_trade_executed calls).
+
+        Each fill carries: coin, oid, side, sz, px, dir ("Open Long"/
+        "Close Long"/"Open Short"/"Close Short"), startPosition, hash, time,
+        fee. We notify the strategy and, on opening fills with grouped
+        tpsl_mode, arm a paired TP/SL via the adapter.
+        """
+        if not self.running or not self.strategy or not self.exchange:
+            return
+
+        if payload.get("isSnapshot"):
+            return
+
+        fills = payload.get("fills") or []
+        for fill in fills:
+            try:
+                # Fill events deliver oid as int; the adapter returns it as
+                # str — normalize both sides on the str form.
+                oid = str(fill.get("oid", ""))
+                signal = self._signals_by_oid.pop(oid, None)
+                px = float(fill.get("px", 0))
+                sz = float(fill.get("sz", 0))
+
+                if signal is not None:
+                    self.strategy.on_trade_executed(signal, px, sz)
+                    self.executed_trades += 1
+                    self.logger.info(
+                        f"💱 Filled {fill.get('coin')} {fill.get('side')} "
+                        f"sz={sz} @ ${px} oid={oid}"
+                    )
+
+                direction = fill.get("dir") or ""
+                if "Open" in direction:
+                    await self._maybe_arm_grouped_tpsl(fill)
+                elif "Close" in direction:
+                    self._tpsl_armed.pop(fill.get("coin"), None)
+            except Exception as e:
+                self.logger.error(f"❌ Error handling fill: {e}")
+
+    async def _maybe_arm_grouped_tpsl(self, fill: Dict[str, Any]) -> None:
+        """Place paired TP/SL trigger orders if tpsl_mode == 'grouped'.
+
+        Idempotent per asset: skips if already armed since last close.
+        Requires the position to be present in get_positions (race-safe).
+        """
+        risk_cfg = self.config.get("risk_management", {})
+        if risk_cfg.get("tpsl_mode", "polling") != "grouped":
+            return
+
+        coin = fill.get("coin")
+        if not coin or self._tpsl_armed.get(coin):
+            return
+
+        positions = await self.exchange.get_positions()
+        position = next((p for p in positions if p.asset == coin), None)
+        if position is None or position.size == 0:
+            return
+
+        sl_pct = risk_cfg.get("stop_loss_pct") if risk_cfg.get("stop_loss_enabled") else None
+        tp_pct = risk_cfg.get("take_profit_pct") if risk_cfg.get("take_profit_enabled") else None
+        if sl_pct is None and tp_pct is None:
+            return
+
+        is_long = position.size > 0
+        entry = position.entry_price
+        tp_price = entry * (1 + tp_pct / 100) if tp_pct is not None and is_long else (
+            entry * (1 - tp_pct / 100) if tp_pct is not None else None
+        )
+        sl_price = entry * (1 - sl_pct / 100) if sl_pct is not None and is_long else (
+            entry * (1 + sl_pct / 100) if sl_pct is not None else None
+        )
+
+        try:
+            await self.exchange.register_position_tpsl(
+                coin, position.size, tp_price=tp_price, sl_price=sl_price
+            )
+            self._tpsl_armed[coin] = True
+            self.logger.info(
+                f"🎯 Armed grouped TP/SL on {coin}: tp={tp_price} sl={sl_price}"
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Failed to arm grouped TP/SL on {coin}: {e}")
 
     async def _close_positions(self, signal: TradingSignal) -> None:
         """Close positions (e.g., cancel all orders for rebalancing)"""

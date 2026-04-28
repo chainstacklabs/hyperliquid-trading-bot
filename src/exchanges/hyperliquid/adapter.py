@@ -354,6 +354,76 @@ class HyperliquidAdapter(ExchangeAdapter):
 
         return "na"
 
+    async def register_position_tpsl(
+        self,
+        asset: str,
+        position_size: float,
+        tp_price: Optional[float] = None,
+        sl_price: Optional[float] = None,
+        dex: Optional[str] = None,
+    ) -> bool:
+        """Register paired TP/SL trigger orders against a live position.
+
+        Uses SDK 0.21+ `bulk_orders(grouping="positionTpsl")` so the matching
+        engine fires either order without a polling race. `position_size` is
+        signed (long > 0, short < 0); the trigger orders are sized to fully
+        close that position. Pass `tp_price` / `sl_price` in absolute terms;
+        pass `None` to skip a leg. Returns True on placement success.
+        """
+        if not self.is_connected:
+            raise RuntimeError("Not connected to exchange")
+        if position_size == 0:
+            raise RuntimeError("position_size must be non-zero")
+        if tp_price is None and sl_price is None:
+            raise RuntimeError("at least one of tp_price/sl_price must be set")
+
+        from hyperliquid.utils.signing import OrderType as HLOrderType
+
+        is_long = position_size > 0
+        size = abs(position_size)
+        rounded_sz = self._round_size(asset, size, dex=dex)
+
+        requests = []
+        # TP and SL trigger orders are placed on the *opposite* side of the
+        # position so they reduce it. Use isMarket=True for guaranteed exit.
+        if tp_price is not None:
+            tp_px = self._round_price(asset, tp_price, dex=dex)
+            requests.append({
+                "coin": asset,
+                "is_buy": not is_long,
+                "sz": rounded_sz,
+                "limit_px": tp_px,
+                "order_type": HLOrderType({
+                    "trigger": {
+                        "triggerPx": tp_px,
+                        "isMarket": True,
+                        "tpsl": "tp",
+                    }
+                }),
+                "reduce_only": True,
+            })
+        if sl_price is not None:
+            sl_px = self._round_price(asset, sl_price, dex=dex)
+            requests.append({
+                "coin": asset,
+                "is_buy": not is_long,
+                "sz": rounded_sz,
+                "limit_px": sl_px,
+                "order_type": HLOrderType({
+                    "trigger": {
+                        "triggerPx": sl_px,
+                        "isMarket": True,
+                        "tpsl": "sl",
+                    }
+                }),
+                "reduce_only": True,
+            })
+
+        result = self.exchange.bulk_orders(requests, grouping="positionTpsl")
+        if not (result and result.get("status") == "ok"):
+            raise RuntimeError(f"register_position_tpsl failed: {result}")
+        return True
+
     async def disconnect(self) -> None:
         """Disconnect from Hyperliquid"""
         self.is_connected = False
