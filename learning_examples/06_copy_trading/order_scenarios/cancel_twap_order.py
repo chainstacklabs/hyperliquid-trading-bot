@@ -6,6 +6,7 @@ TWAP order cancellation uses raw API calls since they're not in the SDK yet.
 import asyncio
 import json
 import os
+import sys
 from dotenv import load_dotenv
 from eth_account import Account
 from hyperliquid.exchange import Exchange
@@ -49,14 +50,14 @@ async def cancel_twap_order():
                 "❌ Set TWAP_ID env var to the id printed by place_twap_order.py "
                 "(and optionally TWAP_COIN; defaults to PURR/USDC)."
             )
-            return
+            sys.exit(2)
         try:
             latest_twap_id = int(twap_id_raw)
             if latest_twap_id <= 0:
                 raise ValueError
         except ValueError:
             print(f"❌ TWAP_ID must be a positive integer, got: {twap_id_raw!r}")
-            return
+            sys.exit(2)
         coin = os.getenv("TWAP_COIN", "PURR/USDC")
 
         print(f"🎯 Attempting to cancel TWAP order:")
