@@ -61,30 +61,63 @@ class HyperliquidEndpointRouter:
         # Info API methods - work with both public and Chainstack
         "all_mids": [EndpointType.INFO],
         "user_state": [EndpointType.INFO],
+        "spot_user_state": [EndpointType.INFO],
+        "clearinghouse_state": [EndpointType.INFO],
+        "spot_clearinghouse_state": [EndpointType.INFO],
         "open_orders": [EndpointType.INFO],
+        "frontend_open_orders": [EndpointType.INFO],
         "meta": [EndpointType.INFO],
-        "candles": [EndpointType.INFO],
+        "meta_and_asset_ctxs": [EndpointType.INFO],
         "spot_meta": [EndpointType.INFO],
+        "spot_meta_and_asset_ctxs": [EndpointType.INFO],
+        "candles": [EndpointType.INFO],
+        "candles_snapshot": [EndpointType.INFO],
         "user_fills": [EndpointType.INFO],
+        "user_funding": [EndpointType.INFO],
+        "user_non_funding_ledger_updates": [EndpointType.INFO],
         "user_rate_limits": [EndpointType.INFO],
+        "extra_agents": [EndpointType.INFO],
+        # HIP-3 (Oct 2025) and dex abstraction (SDK 0.20.0)
+        "perp_dexs": [EndpointType.INFO],
+        "all_dexs_clearinghouse_state": [EndpointType.INFO],
+        "all_dexs_asset_ctxs": [EndpointType.INFO],
+        "twap_states": [EndpointType.INFO],
+        "predicted_fundings": [EndpointType.INFO],
         # Exchange API methods - ONLY work with public endpoints (auth required)
         "place_order": [EndpointType.EXCHANGE],
+        "bulk_orders": [EndpointType.EXCHANGE],
         "cancel_order": [EndpointType.EXCHANGE],
+        "bulk_cancel": [EndpointType.EXCHANGE],
         "modify_order": [EndpointType.EXCHANGE],
+        "bulk_modify_orders_new": [EndpointType.EXCHANGE],
+        "market_open": [EndpointType.EXCHANGE],
+        "market_close": [EndpointType.EXCHANGE],
         "update_leverage": [EndpointType.EXCHANGE],
         "transfer": [EndpointType.EXCHANGE],
+        "send_asset": [EndpointType.EXCHANGE],
         "withdraw": [EndpointType.EXCHANGE],
+        "approve_agent": [EndpointType.EXCHANGE],
         # HyperEVM methods - work better with Chainstack (no rate limits)
         "eth_getBalance": [EndpointType.EVM],
         "eth_call": [EndpointType.EVM],
         "eth_blockNumber": [EndpointType.EVM],
+        "eth_chainId": [EndpointType.EVM],
         "eth_getLogs": [EndpointType.EVM],
         "eth_getBlockByNumber": [EndpointType.EVM],
         "eth_getTransactionReceipt": [EndpointType.EVM],
-        # WebSocket subscriptions
-        "subscribe_price": [EndpointType.WEBSOCKET],
-        "subscribe_fills": [EndpointType.WEBSOCKET],
-        "subscribe_orders": [EndpointType.WEBSOCKET],
+        # WebSocket subscriptions (2025-2026)
+        "subscribe_price": [EndpointType.WEBSOCKET],  # allMids
+        "subscribe_bbo": [EndpointType.WEBSOCKET],  # SDK 0.15+
+        "subscribe_active_asset_ctx": [EndpointType.WEBSOCKET],  # SDK 0.16+
+        "subscribe_active_asset_data": [EndpointType.WEBSOCKET],  # SDK 0.16+
+        "subscribe_user_twap_slice_fills": [EndpointType.WEBSOCKET],
+        "subscribe_user_twap_history": [EndpointType.WEBSOCKET],
+        "subscribe_web_data3": [EndpointType.WEBSOCKET],  # supersedes webData2
+        "subscribe_all_dexs_clearinghouse_state": [EndpointType.WEBSOCKET],
+        "subscribe_all_dexs_asset_ctxs": [EndpointType.WEBSOCKET],
+        "subscribe_fills": [EndpointType.WEBSOCKET],  # userFills
+        "subscribe_orders": [EndpointType.WEBSOCKET],  # orderUpdates
+        "subscribe_user_events": [EndpointType.WEBSOCKET],
     }
 
     # Provider priority for each endpoint type (first = preferred)
@@ -182,7 +215,7 @@ class HyperliquidEndpointRouter:
                     EndpointType.WEBSOCKET,
                 ),
                 (
-                    "https://api.hyperliquid-testnet.xyz",
+                    "https://rpc.hyperliquid-testnet.xyz/evm",
                     Provider.PUBLIC,
                     EndpointType.EVM,
                 ),
@@ -204,7 +237,7 @@ class HyperliquidEndpointRouter:
                     Provider.PUBLIC,
                     EndpointType.WEBSOCKET,
                 ),
-                ("https://api.hyperliquid.xyz", Provider.PUBLIC, EndpointType.EVM),
+                ("https://rpc.hyperliquid.xyz/evm", Provider.PUBLIC, EndpointType.EVM),
             ]
 
         for url, provider, endpoint_type in defaults:
@@ -346,16 +379,33 @@ class HyperliquidEndpointRouter:
                         headers={"Content-Type": "application/json"},
                     )
                 elif endpoint.endpoint_type == EndpointType.EVM:
+                    # eth_chainId verifies HyperEVM mainnet (999) or testnet
+                    # (998) — wrong chain id under EVM endpoint is fatal.
                     response = await client.post(
                         endpoint.url,
                         json={
                             "jsonrpc": "2.0",
-                            "method": "eth_blockNumber",
+                            "method": "eth_chainId",
                             "params": [],
                             "id": 1,
                         },
                         headers={"Content-Type": "application/json"},
                     )
+                    if response.status_code == 200:
+                        try:
+                            chain_id_hex = response.json().get("result", "0x0")
+                            chain_id = int(chain_id_hex, 16)
+                            expected = 998 if endpoint.testnet else 999
+                            if chain_id != expected:
+                                self.logger.error(
+                                    f"EVM endpoint {endpoint.url} returned "
+                                    f"chainId={chain_id}, expected {expected}"
+                                )
+                                endpoint.is_healthy = False
+                                return
+                        except (ValueError, KeyError, TypeError):
+                            endpoint.is_healthy = False
+                            return
                 elif endpoint.endpoint_type == EndpointType.EXCHANGE:
                     # Can't really health check exchange endpoint without auth
                     # Just assume it's healthy if configured
