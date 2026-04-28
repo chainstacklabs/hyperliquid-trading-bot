@@ -31,6 +31,7 @@ class HyperliquidAdapter(ExchangeAdapter):
     PERP_PX_MAX_DECIMALS = 6
     SPOT_PX_MAX_DECIMALS = 8
     MIN_NOTIONAL_USD = 10.0
+    MAX_PRIORITY_FEE_BPS = 8
 
     def __init__(
         self,
@@ -39,6 +40,7 @@ class HyperliquidAdapter(ExchangeAdapter):
         account_address: Optional[str] = None,
         dex: Optional[str] = None,
         expires_after_ms: Optional[int] = None,
+        expires_after_ttl_ms: Optional[int] = None,
         default_priority_fee_bps: Optional[int] = None,
     ):
         super().__init__("Hyperliquid")
@@ -55,13 +57,22 @@ class HyperliquidAdapter(ExchangeAdapter):
         # Per-call dex overrides are also accepted on get_balance/positions etc.
         self.dex = dex
 
-        # SDK 0.12.0+ expires_after for signed L1 actions. Set per-Exchange at
-        # connect; can be None to disable.
+        # SDK 0.12.0+ expires_after for signed L1 actions. Two modes (TTL has
+        # precedence when both are set):
+        #   expires_after_ttl_ms: deadline = connect_time + ttl, recomputed
+        #     every connect() so long-running adapters stay valid.
+        #   expires_after_ms: pinned absolute epoch-ms.
+        # None on both disables the feature.
         self.expires_after_ms = expires_after_ms
+        self.expires_after_ttl_ms = expires_after_ttl_ms
 
         # SDK 0.23.0+ default priority fee in bps applied to orders that don't
-        # set their own. None = no priority fee.
-        self.default_priority_fee_bps = default_priority_fee_bps
+        # set their own. 0 == None (disabled). Range 1..MAX_PRIORITY_FEE_BPS.
+        self.default_priority_fee_bps = (
+            default_priority_fee_bps
+            if default_priority_fee_bps
+            else None
+        )
 
         # Hyperliquid SDK components (will be initialized on connect)
         self.info = None
@@ -117,8 +128,9 @@ class HyperliquidAdapter(ExchangeAdapter):
             self._load_asset_metadata()
             self._check_agent_approval(wallet.address)
 
-            if self.expires_after_ms is not None:
-                self.exchange.set_expires_after(self.expires_after_ms)
+            deadline = self._resolve_expires_after_deadline()
+            if deadline is not None:
+                self.exchange.set_expires_after(deadline)
 
             # Test connection against the master account
             self.info.user_state(self.account_address)
@@ -288,6 +300,17 @@ class HyperliquidAdapter(ExchangeAdapter):
         """Return known perp dex names ('' = main perp dex)."""
         return list(self._known_dexes)
 
+    def _resolve_expires_after_deadline(self) -> Optional[int]:
+        """Compute the epoch-ms deadline to set on Exchange.set_expires_after.
+
+        TTL takes precedence and is computed fresh on each connect() so a
+        process running for days doesn't drift past a stale construction-time
+        deadline. Absolute mode is pinned and the caller's responsibility.
+        """
+        if self.expires_after_ttl_ms is not None:
+            return int(time.time() * 1000) + int(self.expires_after_ttl_ms)
+        return self.expires_after_ms
+
     def _resolve_grouping(self, order: Order):
         """Resolve order grouping for SDK bulk_orders.
 
@@ -295,6 +318,10 @@ class HyperliquidAdapter(ExchangeAdapter):
         PriorityGrouping dict {"p": bps} when a priority fee is requested.
         Order-level priority_fee_bps takes precedence over the adapter's
         default. Order grouping and priority fee are mutually exclusive.
+
+        Note on priority_fee_bps=0: treated as "no priority fee" for caller
+        ergonomics (use None or omit to disable). Out-of-range values
+        (negative or > MAX_PRIORITY_FEE_BPS) raise.
         """
         bps = order.priority_fee_bps
         if bps is None:
@@ -307,11 +334,15 @@ class HyperliquidAdapter(ExchangeAdapter):
                 )
             return order.grouping
 
+        if bps is not None and bps < 0:
+            raise RuntimeError(f"priority_fee_bps={bps} cannot be negative")
+        if bps is not None and bps > self.MAX_PRIORITY_FEE_BPS:
+            raise RuntimeError(
+                f"priority_fee_bps={bps} exceeds MAX_PRIORITY_FEE_BPS="
+                f"{self.MAX_PRIORITY_FEE_BPS}"
+            )
+
         if bps:
-            if not 0 <= bps <= 8:
-                raise RuntimeError(
-                    f"priority_fee_bps={bps} out of range (server cap is 8 bps)"
-                )
             return {"p": int(bps)}
 
         return "na"
@@ -418,19 +449,25 @@ class HyperliquidAdapter(ExchangeAdapter):
                     raise RuntimeError(
                         "grouping/priority_fee_bps not supported with MARKET orders"
                     )
-                result = self.exchange.market_open(
-                    name=order.asset,
-                    is_buy=is_buy,
-                    sz=rounded_size,
-                    slippage=0.05,
-                )
+                if order.reduce_only:
+                    # market_open doesn't expose reduce_only; route through
+                    # market_close (which is reduce-only by construction).
+                    result = self.exchange.market_close(
+                        coin=order.asset, sz=rounded_size, slippage=0.05
+                    )
+                else:
+                    result = self.exchange.market_open(
+                        name=order.asset,
+                        is_buy=is_buy,
+                        sz=rounded_size,
+                        slippage=0.05,
+                    )
             else:
                 rounded_price = self._round_price(
                     order.asset, order.price, dex=order_dex
                 )
                 # Priority-fee orders must be IOC (server-enforced).
-                is_priority = isinstance(grouping_arg, dict)
-                tif = "Ioc" if is_priority else "Gtc"
+                tif = "Ioc" if isinstance(grouping_arg, dict) else "Gtc"
                 limit_order_type: HLOrderType = {"limit": {"tif": tif}}
                 if grouping_arg != "na":
                     # SDK 0.21+: order grouping (positionTpsl, normalTpsl) and

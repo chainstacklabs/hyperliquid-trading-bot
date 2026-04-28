@@ -14,6 +14,15 @@ from typing import Optional
 
 from .hyperliquid import HyperliquidAdapter, HyperliquidMarketData
 
+
+def _parse_int_env(name: str, raw: Optional[str]) -> Optional[int]:
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError as e:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from e
+
 # Exchange registry - makes it easy to add new DEXes
 EXCHANGE_REGISTRY = {
     "hyperliquid": HyperliquidAdapter,
@@ -58,20 +67,32 @@ def create_exchange_adapter(exchange_type: str, config: dict):
         )
         dex = config.get("dex")
 
-        # SDK 0.12+ expires_after; absolute epoch-ms is what the SDK expects,
-        # but it's more ergonomic to specify a TTL. Accept either: TTL_MS sets
-        # a moving deadline at every connect, ABSOLUTE_MS pins one.
-        expires_ttl = os.getenv("HYPERLIQUID_EXPIRES_AFTER_TTL_MS")
-        expires_abs = os.getenv("HYPERLIQUID_EXPIRES_AFTER_MS")
-        expires_after_ms: Optional[int] = None
-        if expires_ttl:
-            import time
-            expires_after_ms = int(time.time() * 1000) + int(expires_ttl)
-        elif expires_abs:
-            expires_after_ms = int(expires_abs)
-
-        priority_env = os.getenv("HYPERLIQUID_PRIORITY_FEE_BPS")
-        default_priority_fee_bps = int(priority_env) if priority_env else None
+        # SDK 0.12+ expires_after for signed L1 actions. Two modes:
+        #   TTL_MS: moving deadline computed inside HyperliquidAdapter.connect()
+        #   ABSOLUTE_MS: pinned epoch-ms, set once
+        # We pass the raw values through and let the adapter compute the
+        # absolute deadline at connect time so long-running deployments don't
+        # silently drift past a stale construction-time deadline.
+        expires_ttl_raw = os.getenv("HYPERLIQUID_EXPIRES_AFTER_TTL_MS")
+        expires_abs_raw = os.getenv("HYPERLIQUID_EXPIRES_AFTER_MS")
+        if expires_ttl_raw and expires_abs_raw:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Both HYPERLIQUID_EXPIRES_AFTER_TTL_MS and "
+                "HYPERLIQUID_EXPIRES_AFTER_MS are set; using TTL."
+            )
+        expires_after_ttl_ms = _parse_int_env(
+            "HYPERLIQUID_EXPIRES_AFTER_TTL_MS", expires_ttl_raw
+        )
+        expires_after_ms = (
+            None
+            if expires_after_ttl_ms is not None
+            else _parse_int_env("HYPERLIQUID_EXPIRES_AFTER_MS", expires_abs_raw)
+        )
+        default_priority_fee_bps = _parse_int_env(
+            "HYPERLIQUID_PRIORITY_FEE_BPS",
+            os.getenv("HYPERLIQUID_PRIORITY_FEE_BPS"),
+        )
 
         if not private_key:
             raise ValueError("private_key is required for Hyperliquid")
@@ -82,6 +103,7 @@ def create_exchange_adapter(exchange_type: str, config: dict):
             account_address=account_address,
             dex=dex,
             expires_after_ms=expires_after_ms,
+            expires_after_ttl_ms=expires_after_ttl_ms,
             default_priority_fee_bps=default_priority_fee_bps,
         )
 
