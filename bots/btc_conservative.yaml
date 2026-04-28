@@ -10,6 +10,13 @@ active: true  # Options: true/false - Enable/disable this trading strategy
 exchange:
   type: "hyperliquid"  # Exchange type (options: "hyperliquid", "hl")
   testnet: true        # Options: true/false - Use testnet for development
+  # dex: "felix"       # Optional HIP-3 builder-deployed perp dex (e.g. "felix",
+                       # "unit"). Default null = main perp dex. HIP-3 symbols
+                       # are namespaced "felix:CRCL"; use the prefix here.
+  # account_address: "0x..."  # Optional master address when the private key
+                              # is an agent / API wallet. Falls back to
+                              # TESTNET_WALLET_ADDRESS / MAINNET_WALLET_ADDRESS
+                              # env vars, or the signer's own address.
 
 account:
   max_allocation_pct: 10.0  # Uses only 10% of total account (range: 1-100%)

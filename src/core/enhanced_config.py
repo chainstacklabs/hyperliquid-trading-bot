@@ -142,7 +142,8 @@ class GridConfig:
     """Grid configuration.
 
     `dex` selects a HIP-3 builder-deployed perp dex (None = main perp dex).
-    `is_spot` switches the asset namespace to spot pairs.
+    HIP-3 perps use namespaced symbols like "felix:CRCL"; the dex prefix is
+    auto-inferred from the symbol when `dex` is unset.
     """
 
     symbol: str = "BTC"
@@ -150,7 +151,6 @@ class GridConfig:
     price_range: PriceRangeConfig = field(default_factory=PriceRangeConfig)
     position_sizing: PositionSizingConfig = field(default_factory=PositionSizingConfig)
     dex: Optional[str] = None
-    is_spot: bool = False
 
     def validate(self) -> None:
         """Validate grid configuration"""

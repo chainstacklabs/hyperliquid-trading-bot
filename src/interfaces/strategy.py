@@ -34,7 +34,6 @@ class TradingSignal:
     reason: str = ""
     metadata: Dict[str, Any] = None
     dex: Optional[str] = None
-    is_spot: bool = False
 
     def __post_init__(self):
         if self.metadata is None:

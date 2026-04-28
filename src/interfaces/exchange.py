@@ -56,7 +56,6 @@ class Order:
     exchange_order_id: Optional[str] = None
     created_at: float = 0.0  # Timestamp when order was created
     dex: Optional[str] = None
-    is_spot: bool = False
 
 
 @dataclass

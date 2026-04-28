@@ -126,25 +126,28 @@ class HyperliquidAdapter(ExchangeAdapter):
             return False
 
     def _load_asset_metadata(self) -> None:
+        """Discover dexes and eagerly load main + configured dex metadata.
+
+        209+ HIP-3 dexes makes a fan-out load at connect prohibitively slow.
+        We eagerly load only what's needed (main perp + the adapter's
+        configured `dex`); other dexes are lazy-loaded by `_ensure_dex_meta`
+        on first asset access.
+        """
         # Discover available HIP-3 dexes; main perp is "" by SDK convention.
         try:
             dexes = self.info.perp_dexs() or []
-            self._known_dexes = [""] + [d.get("name") for d in dexes if isinstance(d, dict) and d.get("name")]
+            self._known_dexes = [""] + [
+                d.get("name")
+                for d in dexes
+                if isinstance(d, dict) and d.get("name")
+            ]
         except Exception as e:
-            print(f"⚠️ Failed to discover perp dexes (HIP-3 support disabled): {e}")
+            print(f"⚠️ Failed to discover perp dexes (HIP-3 disabled): {e}")
             self._known_dexes = [""]
 
-        for dex_name in self._known_dexes:
-            try:
-                meta = self.info.meta(dex=dex_name)
-                for asset_info in meta.get("universe", []):
-                    name = asset_info.get("name")
-                    if name is not None:
-                        self._perp_sz_decimals[(dex_name, name)] = int(
-                            asset_info.get("szDecimals", 0)
-                        )
-            except Exception as e:
-                print(f"⚠️ Failed to load perp metadata for dex={dex_name!r}: {e}")
+        eager = {""} | ({self.dex} if self.dex else set())
+        for dex_name in eager:
+            self._ensure_dex_meta(dex_name)
 
         try:
             spot_meta = self.info.spot_meta()
@@ -187,6 +190,21 @@ class HyperliquidAdapter(ExchangeAdapter):
         except Exception as e:
             print(f"⚠️ Could not verify agent approval: {e}")
 
+    def _ensure_dex_meta(self, dex_name: str) -> None:
+        """Lazily load perp meta for `dex_name` if not already cached."""
+        if any(k[0] == dex_name for k in self._perp_sz_decimals):
+            return
+        try:
+            meta = self.info.meta(dex=dex_name)
+            for asset_info in meta.get("universe", []):
+                name = asset_info.get("name")
+                if name is not None:
+                    self._perp_sz_decimals[(dex_name, name)] = int(
+                        asset_info.get("szDecimals", 0)
+                    )
+        except Exception as e:
+            print(f"⚠️ Failed to load perp metadata for dex={dex_name!r}: {e}")
+
     def _is_spot(self, asset: str) -> bool:
         return "/" in asset or asset.startswith("@")
 
@@ -218,6 +236,8 @@ class HyperliquidAdapter(ExchangeAdapter):
 
         resolved = self._infer_dex_from_asset(asset, dex)
         key = (resolved, asset)
+        if key not in self._perp_sz_decimals:
+            self._ensure_dex_meta(resolved)
         if key not in self._perp_sz_decimals:
             raise RuntimeError(
                 f"Missing perp precision metadata for {asset} on dex={resolved!r}"
@@ -509,7 +529,9 @@ class HyperliquidAdapter(ExchangeAdapter):
         """Get open orders.
 
         By default returns orders for the adapter's configured dex (or main).
-        Set `all_dexes=True` to aggregate across every known HIP-3 dex.
+        `all_dexes=True` aggregates across every known HIP-3 dex; with 200+
+        dexes on mainnet this issues one Info request per dex serially. Use
+        sparingly — prefer narrowing via `dex=` for hot paths.
         """
         if not self.is_connected:
             return []
@@ -557,7 +579,11 @@ class HyperliquidAdapter(ExchangeAdapter):
     async def get_positions(
         self, dex: Optional[str] = None, all_dexes: bool = False
     ) -> List["Position"]:
-        """Get current positions on the selected dex (or aggregated)."""
+        """Get current positions on the selected dex (or aggregated).
+
+        `all_dexes=True` issues one user_state request per known dex serially;
+        cost grows with the number of HIP-3 dexes. Prefer `dex=` for hot paths.
+        """
         if not self.is_connected:
             return []
 

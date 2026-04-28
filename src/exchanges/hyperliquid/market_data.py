@@ -49,9 +49,13 @@ class HyperliquidMarketData:
         self._asset_dex: Dict[str, str] = {}
         self._dex_subscriptions: set = set()
 
-        # Generic channel subscription callbacks keyed by subscription type
-        # (e.g. "bbo", "activeAssetCtx", "userTwapSliceFills").
-        self._channel_callbacks: Dict[str, List[Callable[[Dict[str, Any]], Any]]] = {}
+        # Generic channel subscription state. Callbacks are keyed by
+        # (type, coin) so multiple per-coin subscriptions on the same channel
+        # type don't cross-fire. Subscriptions list is replayed on reconnect.
+        self._channel_callbacks: Dict[
+            tuple, List[Callable[[Dict[str, Any]], Any]]
+        ] = {}
+        self._channel_subscriptions: List[Dict[str, Any]] = []
 
     def _resolve_ws_url(self) -> str:
         url = self.endpoint_router.get_endpoint_for_method("subscribe_price")
@@ -168,15 +172,14 @@ class HyperliquidMarketData:
         subscription: Dict[str, Any],
         callback: Callable[[Dict[str, Any]], Any],
     ) -> None:
-        """Generic subscription helper for HIP-3-era channels (bbo,
-        activeAssetCtx, activeAssetData, userTwapSliceFills, userTwapHistory,
-        webData3, allDexsAssetCtxs, allDexsClearinghouseState, etc.).
+        """Generic subscription for HIP-3-era channels (bbo, activeAssetCtx,
+        activeAssetData, userTwapSliceFills, userTwapHistory, webData3,
+        allDexsAssetCtxs, allDexsClearinghouseState, etc.).
 
-        The caller passes the full `subscription` dict (e.g. {"type": "bbo",
-        "coin": "BTC"}). The callback receives the raw `data` payload of every
-        matching message. Channel name matching is permissive: the message's
-        "channel" field is matched against `subscription["type"]` exactly,
-        with the known alias activeAssetCtx -> activeSpotAssetCtx for spot.
+        Pass the full `subscription` dict (e.g. {"type": "bbo", "coin": "BTC"}).
+        Callbacks are keyed by (type, coin) so per-coin subscriptions don't
+        cross-fire. activeSpotAssetCtx is aliased to activeAssetCtx for
+        callers using the generic name.
         """
         if not (self.ws and self.running):
             raise RuntimeError("WebSocket not connected")
@@ -185,7 +188,9 @@ class HyperliquidMarketData:
         if not sub_type:
             raise ValueError("subscription must have a 'type'")
 
-        self._channel_callbacks.setdefault(sub_type, []).append(callback)
+        coin = subscription.get("coin")
+        self._channel_callbacks.setdefault((sub_type, coin), []).append(callback)
+        self._channel_subscriptions.append(dict(subscription))
         await self.ws.send(
             json.dumps({"method": "subscribe", "subscription": subscription})
         )
@@ -255,14 +260,25 @@ class HyperliquidMarketData:
             await self._handle_price_update(data.get("data", {}))
             return
 
-        # Map activeSpotAssetCtx -> activeAssetCtx for callers that subscribed
-        # via the generic name; SDK 0.16+ delivers spot under a distinct channel
-        # but the subscription type is still "activeAssetCtx".
-        lookup = "activeAssetCtx" if channel == "activeSpotAssetCtx" else channel
-        callbacks = self._channel_callbacks.get(lookup) or []
-        for cb in callbacks:
+        # activeSpotAssetCtx is delivered under that channel name but callers
+        # subscribe via the generic "activeAssetCtx" type; alias them.
+        lookup_type = (
+            "activeAssetCtx" if channel == "activeSpotAssetCtx" else channel
+        )
+
+        payload = data.get("data", {})
+        # Per-coin filtering: a callback registered with coin=X only fires for
+        # messages that match that coin (or for channels with no coin scope).
+        msg_coin = payload.get("coin") if isinstance(payload, dict) else None
+        recipients = []
+        for (sub_type, sub_coin), cbs in self._channel_callbacks.items():
+            if sub_type != lookup_type:
+                continue
+            if sub_coin is None or msg_coin is None or sub_coin == msg_coin:
+                recipients.extend(cbs)
+
+        for cb in recipients:
             try:
-                payload = data.get("data", {})
                 if asyncio.iscoroutinefunction(cb):
                     asyncio.create_task(cb(payload))
                 else:
@@ -328,14 +344,17 @@ class HyperliquidMarketData:
             return False
 
     async def _resubscribe_all(self) -> None:
-        """Re-subscribe across every dex previously seen after reconnection."""
+        """Replay every subscription (allMids per dex + generic channels)."""
 
-        if not (self.subscribed_assets and self.ws and self.running):
+        if not (self.ws and self.running):
             return
 
-        prior = set(self._dex_subscriptions) or {""}
+        # Replay per-dex allMids subs.
+        prior_dexes = set(self._dex_subscriptions) or (
+            {""} if self.subscribed_assets else set()
+        )
         self._dex_subscriptions.clear()
-        for d in prior:
+        for d in prior_dexes:
             subscription: Dict[str, Any] = {"type": "allMids"}
             if d:
                 subscription["dex"] = d
@@ -343,8 +362,16 @@ class HyperliquidMarketData:
                 json.dumps({"method": "subscribe", "subscription": subscription})
             )
             self._dex_subscriptions.add(d)
+
+        # Replay generic channels (bbo, activeAssetCtx, ...).
+        for sub in self._channel_subscriptions:
+            await self.ws.send(
+                json.dumps({"method": "subscribe", "subscription": sub})
+            )
+
         print(
-            f"🔄 Re-subscribed across {len(prior)} dex(es) for {len(self.subscribed_assets)} assets"
+            f"🔄 Re-subscribed: {len(prior_dexes)} dex(es), "
+            f"{len(self._channel_subscriptions)} generic channel(s)"
         )
 
     def get_status(self) -> Dict[str, Any]:
