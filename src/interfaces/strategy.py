@@ -74,6 +74,7 @@ class Position:
     dex: Optional[str] = None
     margin_used: float = 0.0
     return_on_equity: float = 0.0
+    leverage: float = 1.0
 
 
 class TradingStrategy(ABC):

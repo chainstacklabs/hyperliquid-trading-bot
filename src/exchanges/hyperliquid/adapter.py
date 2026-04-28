@@ -830,6 +830,8 @@ class HyperliquidAdapter(ExchangeAdapter):
                     unrealized_pnl = float(pos.get("unrealizedPnl", 0))
                     margin_used = float(pos.get("marginUsed", 0))
                     return_on_equity = float(pos.get("returnOnEquity", 0))
+                    leverage_info = pos.get("leverage") or {}
+                    leverage = float(leverage_info.get("value", 1) or 1)
 
                     positions.append(
                         Position(
@@ -842,6 +844,7 @@ class HyperliquidAdapter(ExchangeAdapter):
                             dex=d or None,
                             margin_used=margin_used,
                             return_on_equity=return_on_equity,
+                            leverage=leverage,
                         )
                     )
 
