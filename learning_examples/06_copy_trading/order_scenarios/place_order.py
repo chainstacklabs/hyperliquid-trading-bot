@@ -6,6 +6,7 @@ Creates a single spot order that can be monitored by the mirroring script.
 import asyncio
 import json
 import os
+from math import floor, log10
 from dotenv import load_dotenv
 from eth_account import Account
 from hyperliquid.exchange import Exchange
@@ -18,6 +19,15 @@ BASE_URL = os.getenv("HYPERLIQUID_TESTNET_PUBLIC_BASE_URL")
 SYMBOL = "PURR/USDC"  # Spot pair
 ORDER_SIZE = 3.0  # Size to meet minimum $10 USDC requirement
 PRICE_OFFSET_PCT = -50  # 50% below market for buy order (won't fill)
+
+
+def round_hl_spot_price(px: float, sz_decimals: int = 0) -> float:
+    """Round to Hyperliquid's spot price rules: max 5 significant figures and
+    at most (8 - szDecimals) decimal places."""
+    if px <= 0:
+        return px
+    sig = round(px, -int(floor(log10(abs(px)))) + 4)
+    return round(sig, max(0, 8 - sz_decimals))
 
 
 async def place_spot_order():
@@ -67,8 +77,12 @@ async def place_spot_order():
                     print(f"❌ Could not get valid price for {SYMBOL}")
                     return
 
+                base_token_idx = target_pair.get("tokens", [0])[0]
+                tokens = spot_meta.get("tokens", [])
+                sz_decimals = tokens[base_token_idx].get("szDecimals", 0) if base_token_idx < len(tokens) else 0
+
                 order_price = market_price * (1 + PRICE_OFFSET_PCT / 100)
-                order_price = round(order_price, 6)  # Round to 6 decimals
+                order_price = round_hl_spot_price(order_price, sz_decimals)
 
                 print(f"💰 Current {SYMBOL} price: ${market_price}")
                 print(f"📝 Placing BUY order: {ORDER_SIZE} {SYMBOL} @ ${order_price}")
