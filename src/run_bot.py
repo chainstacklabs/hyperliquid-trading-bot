@@ -57,7 +57,11 @@ class GridTradingBot:
 
         try:
             # Load configuration
-            print(f"📁 Loading configuration: {self.config_path}")
+            try:
+                display_path = Path(self.config_path).resolve().relative_to(Path.cwd())
+            except ValueError:
+                display_path = Path(self.config_path).name
+            print(f"📁 Loading configuration: {display_path}")
             self.config = EnhancedBotConfig.from_yaml(Path(self.config_path))
             print(f"✅ Configuration loaded: {self.config.name}")
 
