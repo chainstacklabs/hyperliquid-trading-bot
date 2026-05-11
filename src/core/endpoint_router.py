@@ -6,14 +6,53 @@ Supports multiple providers (public, Chainstack) with method-specific routing.
 """
 
 import os
+import re
 import asyncio
 import time
 import logging
-from typing import Dict, List, Optional, Tuple, Callable, Any
+from typing import Dict, List, Optional, Set, Tuple, Callable, Any
 from dataclasses import dataclass
 from enum import Enum
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+
+
+_TOKEN_SEG = re.compile(r"^[A-Za-z0-9_-]{16,}$")
+
+
+def redact_address(addr: Optional[str]) -> str:
+    """Shorten a hex address to ``0xXXXX…YYYY`` for safe logging."""
+    if not addr:
+        return ""
+    s = str(addr)
+    if s.startswith("0x") and len(s) > 12:
+        return f"{s[:6]}…{s[-4:]}"
+    if len(s) > 10:
+        return f"{s[:4]}…{s[-4:]}"
+    return s
+
+
+def redact_url(url: str) -> str:
+    """Replace API-key-looking path segments with ``***`` for safe logging.
+
+    Long alphanumeric segments (16+ chars) are treated as secrets;
+    short route names like ``info`` / ``exchange`` / ``evm`` are kept.
+    """
+    if not url:
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if not parts.path:
+        return url
+    redacted = [
+        "***" if _TOKEN_SEG.match(seg) else seg for seg in parts.path.split("/")
+    ]
+    return urlunsplit(
+        (parts.scheme, parts.netloc, "/".join(redacted), parts.query, parts.fragment)
+    )
 
 
 class EndpointType(Enum):
@@ -120,6 +159,24 @@ class HyperliquidEndpointRouter:
         "subscribe_user_events": [EndpointType.WEBSOCKET],
     }
 
+    # Methods known to be unsupported on a given provider for a given network.
+    # Probed against Chainstack testnet 2026-05-11: this subset of /info methods
+    # returns HTTP 422 upstream. Public endpoint handles them.
+    PROVIDER_INCOMPATIBLE_METHODS: Dict[Tuple["Provider", bool], Set[str]] = {
+        (Provider.CHAINSTACK, True): {
+            "all_mids",
+            "user_state",
+            "l2_book",
+            "meta_and_asset_ctxs",
+            "spot_meta_and_asset_ctxs",
+            "predicted_fundings",
+            "all_dexs_asset_ctxs",
+            "candles",
+            "candles_snapshot",
+        },
+        (Provider.CHAINSTACK, False): set(),
+    }
+
     # Provider priority for each endpoint type (first = preferred)
     PROVIDER_PRIORITIES = {
         EndpointType.INFO: [
@@ -187,7 +244,7 @@ class HyperliquidEndpointRouter:
 
                 self.endpoints.append(config)
                 self.logger.debug(
-                    f"Loaded {provider.value} {endpoint_type.value} endpoint: {url[:50]}..."
+                    f"Loaded {provider.value} {endpoint_type.value} endpoint: {redact_url(url)}"
                 )
 
         if not self.endpoints:
@@ -272,7 +329,7 @@ class HyperliquidEndpointRouter:
 
         # For each endpoint type, try to find the best provider
         for endpoint_type in compatible_types:
-            endpoint = self._get_best_endpoint(endpoint_type)
+            endpoint = self._get_best_endpoint(endpoint_type, method_name)
             if endpoint:
                 self.logger.debug(
                     f"Routing {method_name} to {endpoint.provider.value} {endpoint.endpoint_type.value}"
@@ -282,22 +339,73 @@ class HyperliquidEndpointRouter:
         self.logger.error(f"No healthy endpoints available for method: {method_name}")
         return None
 
+    def get_info_routing(
+        self,
+    ) -> Optional[Tuple[EndpointConfig, Optional[EndpointConfig], Set[str]]]:
+        """Resolve INFO routing as ``(primary, fallback, primary_unsupported)``.
+
+        ``primary`` is the preferred INFO endpoint (typically Chainstack when
+        configured); ``fallback`` is a different-provider endpoint to use for
+        methods listed in ``primary_unsupported``. Returns ``None`` if no INFO
+        endpoint is configured at all.
+        """
+        info_endpoints = [
+            ep
+            for ep in self.endpoints
+            if ep.endpoint_type == EndpointType.INFO and ep.is_healthy
+        ]
+        if not info_endpoints:
+            return None
+
+        priorities = self.PROVIDER_PRIORITIES.get(EndpointType.INFO, [])
+
+        def sort_key(ep: EndpointConfig) -> Tuple[int, int]:
+            provider_idx = (
+                priorities.index(ep.provider) if ep.provider in priorities else 999
+            )
+            return (provider_idx, ep.priority)
+
+        info_endpoints.sort(key=sort_key)
+        primary = info_endpoints[0]
+        fallback = next(
+            (ep for ep in info_endpoints[1:] if ep.provider != primary.provider),
+            None,
+        )
+        unsupported = self.PROVIDER_INCOMPATIBLE_METHODS.get(
+            (primary.provider, primary.testnet), set()
+        )
+        return primary, fallback, unsupported
+
     def _get_best_endpoint(
-        self, endpoint_type: EndpointType
+        self,
+        endpoint_type: EndpointType,
+        method_name: Optional[str] = None,
     ) -> Optional[EndpointConfig]:
         """Get the best available endpoint for a specific type"""
 
-        # Filter endpoints by type and health
+        def supports_method(ep: EndpointConfig) -> bool:
+            if method_name is None:
+                return True
+            blocked = self.PROVIDER_INCOMPATIBLE_METHODS.get(
+                (ep.provider, ep.testnet), set()
+            )
+            return method_name not in blocked
+
+        # Filter endpoints by type, health, and per-method compatibility
         candidates = [
             ep
             for ep in self.endpoints
-            if ep.endpoint_type == endpoint_type and ep.is_healthy
+            if ep.endpoint_type == endpoint_type
+            and ep.is_healthy
+            and supports_method(ep)
         ]
 
         if not candidates:
             # If no healthy endpoints, try unhealthy ones as last resort
             candidates = [
-                ep for ep in self.endpoints if ep.endpoint_type == endpoint_type
+                ep
+                for ep in self.endpoints
+                if ep.endpoint_type == endpoint_type and supports_method(ep)
             ]
             if candidates:
                 self.logger.warning(
