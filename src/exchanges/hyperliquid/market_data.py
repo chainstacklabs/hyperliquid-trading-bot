@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Callable, Any
 import time
 
 from interfaces.strategy import MarketData
-from core.endpoint_router import get_endpoint_router
+from core.endpoint_router import get_endpoint_router, redact_address, redact_url
 
 
 class HyperliquidMarketData:
@@ -84,7 +84,7 @@ class HyperliquidMarketData:
             print(
                 f"✅ Connected to Hyperliquid WebSocket ({'testnet' if self.testnet else 'mainnet'})"
             )
-            print(f"📡 Using WebSocket: {ws_url}")
+            print(f"📡 Using WebSocket: {redact_url(ws_url)}")
             return True
 
         except Exception as e:
@@ -194,7 +194,11 @@ class HyperliquidMarketData:
         await self.ws.send(
             json.dumps({"method": "subscribe", "subscription": subscription})
         )
-        print(f"📡 Subscribed to channel: {subscription}")
+        display_sub = {
+            k: (redact_address(v) if k == "user" and isinstance(v, str) else v)
+            for k, v in subscription.items()
+        }
+        print(f"📡 Subscribed to channel: {display_sub}")
 
     def get_latest_price(self, asset: str) -> Optional[float]:
         """Get latest cached price for an asset"""
@@ -336,7 +340,7 @@ class HyperliquidMarketData:
             print(
                 f"✅ Connected to Hyperliquid WebSocket ({'testnet' if self.testnet else 'mainnet'})"
             )
-            print(f"📡 Using WebSocket: {ws_url}")
+            print(f"📡 Using WebSocket: {redact_url(ws_url)}")
             return True
 
         except Exception as e:

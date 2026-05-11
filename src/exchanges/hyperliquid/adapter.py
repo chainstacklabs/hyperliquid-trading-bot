@@ -17,7 +17,7 @@ from interfaces.exchange import (
     Balance,
     MarketInfo,
 )
-from core.endpoint_router import get_endpoint_router
+from core.endpoint_router import get_endpoint_router, redact_address, redact_url
 
 
 class HyperliquidAdapter(ExchangeAdapter):
@@ -96,32 +96,40 @@ class HyperliquidAdapter(ExchangeAdapter):
             from hyperliquid.exchange import Exchange
             from eth_account import Account
 
-            # Get the info endpoint from router
-            info_url = self.endpoint_router.get_endpoint_for_method("user_state")
-            if not info_url:
+            from .routing_info import RoutingInfoClient
+
+            info_routing = self.endpoint_router.get_info_routing()
+            if not info_routing:
                 raise RuntimeError("No healthy info endpoint available")
+            primary_info_ep, fallback_info_ep, primary_unsupported = info_routing
 
             # Get the exchange endpoint from router
             exchange_url = self.endpoint_router.get_endpoint_for_method("cancel_order")
             if not exchange_url:
                 raise RuntimeError("No healthy exchange endpoint available")
 
-            # Remove /info and /exchange suffixes (SDK adds them automatically)
-            info_base_url = (
-                info_url.replace("/info", "")
-                if info_url.endswith("/info")
-                else info_url
+            def strip_suffix(url: str, suffix: str) -> str:
+                return url[: -len(suffix)] if url.endswith(suffix) else url
+
+            primary_info_base = strip_suffix(primary_info_ep.url, "/info")
+            fallback_info_base = (
+                strip_suffix(fallback_info_ep.url, "/info")
+                if fallback_info_ep
+                else None
             )
-            exchange_base_url = (
-                exchange_url.replace("/exchange", "")
-                if exchange_url.endswith("/exchange")
-                else exchange_url
-            )
+            exchange_base_url = strip_suffix(exchange_url, "/exchange")
 
             wallet = Account.from_key(self.private_key)
             self.account_address = self.account_address or wallet.address
 
-            self.info = Info(info_base_url, skip_ws=True)
+            primary_info = Info(primary_info_base, skip_ws=True)
+            if fallback_info_base and primary_unsupported:
+                fallback_info = Info(fallback_info_base, skip_ws=True)
+                self.info = RoutingInfoClient(
+                    primary_info, fallback_info, primary_unsupported
+                )
+            else:
+                self.info = primary_info
             self.exchange = Exchange(
                 wallet, exchange_base_url, account_address=self.account_address
             )
@@ -140,10 +148,24 @@ class HyperliquidAdapter(ExchangeAdapter):
             print(
                 f"✅ Connected to Hyperliquid ({'testnet' if self.testnet else 'mainnet'})"
             )
-            print(f"📡 Info endpoint: {info_url}")
-            print(f"💱 Exchange endpoint: {exchange_url}")
-            print(f"🔑 Signer (agent): {wallet.address}")
-            print(f"🏦 Account (master): {self.account_address}")
+            if fallback_info_ep and primary_unsupported:
+                print(
+                    f"📡 Info endpoint: {redact_url(primary_info_ep.url)} "
+                    f"({primary_info_ep.provider.value})"
+                )
+                print(
+                    f"   ↳ fallback for {len(primary_unsupported)} methods: "
+                    f"{redact_url(fallback_info_ep.url)} "
+                    f"({fallback_info_ep.provider.value})"
+                )
+            else:
+                print(
+                    f"📡 Info endpoint: {redact_url(primary_info_ep.url)} "
+                    f"({primary_info_ep.provider.value})"
+                )
+            print(f"💱 Exchange endpoint: {redact_url(exchange_url)}")
+            print(f"🔑 Signer (agent): {redact_address(wallet.address)}")
+            print(f"🏦 Account (master): {redact_address(self.account_address)}")
             return True
 
         except Exception as e:

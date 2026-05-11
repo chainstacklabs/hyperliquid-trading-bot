@@ -82,6 +82,9 @@ class TradingEngine:
             level=getattr(logging, config.get("log_level", "INFO")),
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
+        # httpx logs every HTTP request at INFO and includes the full URL,
+        # which would leak the Chainstack token path. Silence below WARNING.
+        logging.getLogger("httpx").setLevel(logging.WARNING)
 
     async def initialize(self) -> bool:
         """Initialize all components"""
