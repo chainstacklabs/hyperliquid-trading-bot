@@ -95,9 +95,6 @@ monitoring:
 Master the Hyperliquid API with standalone educational scripts:
 
 ```bash
-# Authentication and connection
-uv run learning_examples/01_authentication/basic_connection.py
-
 # Market data and pricing
 uv run learning_examples/02_market_data/get_all_prices.py
 uv run learning_examples/02_market_data/get_market_metadata.py
@@ -111,7 +108,7 @@ uv run learning_examples/04_trading/place_limit_order.py
 uv run learning_examples/04_trading/cancel_orders.py
 
 # Real-time data
-uv run learning_examples/05_websockets/realtime_prices.py
+uv run learning_examples/01_websockets/realtime_prices.py
 ```
 
 ## 🛡️ Exit strategies
