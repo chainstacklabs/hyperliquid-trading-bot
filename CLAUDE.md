@@ -47,7 +47,8 @@ The codebase follows SOLID principles without overcomplicating the implementatio
 │   ├── exchanges/                # Exchange adapters
 │   │   └── hyperliquid/
 │   │       ├── adapter.py        # Hyperliquid exchange integration
-│   │       └── market_data.py    # Real-time market data provider
+│   │       ├── market_data.py    # Real-time market data provider
+│   │       └── routing_info.py   # Info client routing (primary + public fallback)
 │   ├── interfaces/               # Business logic interfaces
 │   │   ├── strategy.py           # Trading strategy interface
 │   │   └── exchange.py           # Exchange adapter interface
@@ -168,8 +169,8 @@ uv run learning_examples/06_copy_trading/mirror_spot_orders.py
 
 ## Key Dependencies
 
-- `hyperliquid-python-sdk>=0.20.0` - Main SDK for Hyperliquid integration
-- `eth-account>=0.10.0` - Ethereum account management and signing
+- `hyperliquid-python-sdk==0.24.0` - Main SDK for Hyperliquid integration
+- `eth-account~=0.13.7` - Ethereum account management and signing
 - `websockets` - Real-time WebSocket connections
 - `pyyaml` - YAML configuration parsing
 - `python-dotenv` - Environment variable management
@@ -184,7 +185,7 @@ uv run learning_examples/06_copy_trading/mirror_spot_orders.py
 
 **Critical SDK Method Names:**
 - `exchange.order()` - Place orders (NOT `limit_order()`)
-- `exchange.cancel_order()` - Cancel orders
+- `exchange.cancel()` - Cancel orders by `(name, oid)` (NOT `cancel_order()`)
 - `info.all_mids()` - Get all asset prices
 - `info.open_orders()` - Get open orders
 
@@ -196,6 +197,13 @@ uv run learning_examples/06_copy_trading/mirror_spot_orders.py
 HYPERLIQUID_TESTNET_PRIVATE_KEY=0x...  # For testnet trading
 HYPERLIQUID_TESTNET=true               # Enable testnet mode
 ```
+
+**Optional Environment Variables** (see `.env.example` for full list):
+- `HYPERLIQUID_{TESTNET,MAINNET}_PUBLIC_{BASE,INFO,EXCHANGE,WS,EVM}_URL` and `..._CHAINSTACK_{INFO,EVM}_URL` - Provider endpoints. `endpoint_router.py` prefers Chainstack for INFO/EVM/WS when set; EXCHANGE (trading) always uses public; falls back to public on failure
+- `ENDPOINT_HEALTH_CHECK_INTERVAL` / `ENDPOINT_HEALTH_CHECK_TIMEOUT` - Endpoint health-check tuning (default 300s / 10s)
+- `HYPERLIQUID_PRIORITY_FEE_BPS` - Default priority fee in bps applied to orders
+- `HYPERLIQUID_EXPIRES_AFTER_MS` / `HYPERLIQUID_EXPIRES_AFTER_TTL_MS` - Order expiry deadline (absolute / moving TTL)
+- `HYPERLIQUID_MAINNET_PRIVATE_KEY`, `HYPERLIQUID_{TESTNET,MAINNET}_KEY_FILE`, `HYPERLIQUID_PRIVATE_KEY` (legacy) - Alternate key sources
 
 **Development Workflow:**
 1. Set up environment variables
