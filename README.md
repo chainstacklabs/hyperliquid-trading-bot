@@ -4,13 +4,14 @@
 
 This project is under active development. Feel free to submit questions, suggestions, and issues through GitHub.
 
-You're welcome to use the best docs on Hyperliquid API via [Chainstack Developer Portal MCP server](https://docs.chainstack.com/docs/developer-portal-mcp-server).
+You're welcome to use the best docs on Hyperliquid API via [Chainstack Developer Portal MCP server](https://docs.chainstack.com/docs/developer-portal-mcp-server?utm_source=github&utm_medium=referral&utm_campaign=hyperliquid-trading-bot).
 
 ## 🚀 Quick start
 
 ### **Prerequisites**
 - [uv package manager](https://github.com/astral-sh/uv)
-- Hyperliquid testnet account with testnet funds (see [Chainstack Hyperliquid faucet](https://faucet.chainstack.com/hyperliquid-testnet-faucet))
+- Hyperliquid testnet account with testnet funds (see [Chainstack Hyperliquid faucet](https://faucet.chainstack.com/hyperliquid-testnet-faucet?utm_source=github&utm_medium=referral&utm_campaign=hyperliquid-trading-bot))
+- Optional: a Hyperliquid node from your [Chainstack account](https://console.chainstack.com/sign-up?utm_source=github&utm_medium=referral&utm_campaign=hyperliquid-trading-bot) for the `HYPERLIQUID_*_CHAINSTACK_*_URL` endpoints in `.env`
 
 ### **Installation**
 
