@@ -148,6 +148,10 @@ class BasicGridStrategy(TradingStrategy):
 
         # Create grid levels
         self.grid_levels = self._create_grid_levels(min_price, max_price, current_price)
+        if not self.grid_levels:
+            self.state = GridState.STOPPED
+            self.stop()
+            return []
 
         # Generate initial signals
         signals = []
@@ -197,7 +201,14 @@ class BasicGridStrategy(TradingStrategy):
         num_levels = self.grid_config.levels
         total = self.grid_config.total_allocation
 
-        max_levels = max(1, int(total // MIN_NOTIONAL_USD))
+        max_levels = int(total // MIN_NOTIONAL_USD)
+        if min(num_levels, max_levels) < 2:
+            logger.warning(
+                "Stopping grid: need at least two levels and $%.2f allocated "
+                "(configured %d levels, $%.2f).",
+                2 * MIN_NOTIONAL_USD, num_levels, total,
+            )
+            return []
         if num_levels > max_levels:
             logger.warning(
                 "Grid allocation $%.2f / %d levels = $%.2f per level is below "
